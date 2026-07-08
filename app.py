@@ -537,6 +537,31 @@ def main():
 
     st.divider()
 
+    # ---- 이번달 / 지난달 요약 테이블 ----
+    from datetime import datetime
+
+    now = datetime.now()
+    this_month = f"{now.year}-{now.month:02d}"
+    if now.month == 1:
+        last_month = f"{now.year - 1}-12"
+    else:
+        last_month = f"{now.year}-{now.month - 1:02d}"
+
+    month_summary = fdf.groupby(["로펌", "기간"])["금액"].sum().reset_index()
+    summary_rows = []
+    for label, period in [("이번달", this_month), ("지난달", last_month)]:
+        row = {"기간": f"{label} ({period})"}
+        for firm in sorted(fdf["로펌"].unique()):
+            val = month_summary[
+                (month_summary["로펌"] == firm) & (month_summary["기간"] == period)
+            ]["금액"].sum()
+            row[firm] = f"₩{val:,.0f}" if val > 0 else "-"
+        summary_rows.append(row)
+
+    if summary_rows:
+        summary_df = pd.DataFrame(summary_rows).set_index("기간")
+        st.dataframe(summary_df, use_container_width=True)
+
     # ---- 막대 차트 ----
     periods_sorted = sorted(chart_df["집계"].unique())
 
@@ -551,7 +576,9 @@ def main():
                 marker_color=FIRM_COLORS.get(firm, "#95A5A6"),
                 text=fd["금액"].apply(lambda v: f"{v/10_000:,.0f}만"),
                 textposition="inside",
-                textfont=dict(size=10, color="white"),
+                textangle=0,
+                constraintext="none",
+                textfont=dict(size=9, color="white"),
                 hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
             )
         )
@@ -578,7 +605,7 @@ def main():
     st.dataframe(
         tbl,
         column_config={
-            "금액": st.column_config.NumberColumn("금액(VAT제외)", format="₩%d"),
+            "금액": st.column_config.NumberColumn("금액(VAT제외)", format="₩,.0f"),
             "링크": st.column_config.LinkColumn("PDF", display_text="📄 열기"),
             "파일명": st.column_config.TextColumn("파일명", width="large"),
         },

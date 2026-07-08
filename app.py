@@ -1,8 +1,9 @@
 """
 ⚖️ 법무팀 외부 로펌 비용 대시보드
-대웅제약 법무1팀 · 구글 드라이브 인보이스 자동 집계
+대웅제약 법무1팀 · 구글 시트 + 드라이브 PDF 연동
 
-구조: Google Drive(인보이스 PDF/xlsx) → 자동 파싱 → Streamlit 대시보드
+데이터: 구글 시트 "정기자문 & 일반자문" 섹션 (원 단위)
+PDF: 구글 드라이브 로펌별 폴더에서 자동 매칭
 """
 
 import streamlit as st
@@ -10,10 +11,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
-import pdfplumber
-import openpyxl
-import io
 import re
 import json
 
@@ -31,8 +28,21 @@ st.set_page_config(
 # 상수
 # ============================================================
 
-# 루트 폴더 ID (Streamlit secrets에서 가져오거나 기본값 사용)
-ROOT_FOLDER_ID = st.secrets.get("ROOT_FOLDER_ID", "1HleAj4z6DH9KxMjyuf56lRD4b-c7pOyh")
+SPREADSHEET_ID = st.secrets.get(
+    "SPREADSHEET_ID", "1KiSI0ZdXvp_SHeiiz2DJX0Cl-Wv0CnJiRhzp72f9LgY"
+)
+SHEET_NAME = st.secrets.get("SHEET_NAME", "2026")
+ROOT_FOLDER_ID = st.secrets.get(
+    "ROOT_FOLDER_ID", "1HleAj4z6DH9KxMjyuf56lRD4b-c7pOyh"
+)
+
+# 시트 업체명 → 드라이브 폴더명 매핑 (이름이 다른 경우만)
+FIRM_NAME_MAP = {
+    "디.엘.에스": "DLS",
+    "대륙아주": "D&A",
+    "에스엘파트너스": "SLP",
+    "세종_인니": "세종_인도네시아",
+}
 
 # 로펌별 차트 색상
 FIRM_COLORS = {
@@ -40,418 +50,353 @@ FIRM_COLORS = {
     "김앤장": "#922B21",
     "지평": "#196F3D",
     "D&A": "#7D3C98",
+    "대륙아주": "#7D3C98",
     "율촌": "#B9770E",
-    "율촌(영문)": "#D4AC0D",
     "SLP": "#2E86C1",
+    "에스엘파트너스": "#2E86C1",
     "DLS": "#D35400",
+    "디.엘.에스": "#D35400",
     "세종": "#16A085",
+    "세종_인니": "#148F77",
     "세종_인도네시아": "#148F77",
+    "비앤에이치": "#5D6D7E",
+    "CCL": "#AAB7B8",
+    "셰퍼드멀린": "#717D7E",
 }
 
-# 인보이스 파일 판별 키워드
-INVOICE_KEYWORDS = ["자문료", "인보이스", "invoice", "청구", "보수금"]
-EXCLUDE_KEYWORDS = ["할인 전", "할인전"]
-
-# 폴더명 → 표시명 매핑
-FIRM_DISPLAY_NAMES = {
-    "율촌_일반 자문업무 (정성무, 유일한, 안유선)": "율촌",
-    "율촌_일반 자문업무 (영문계약, 인니)": "율촌(영문)",
-}
-
-
-def extract_file_date(filename):
-    """파일명에서 6자리 날짜(YYMMDD) 추출 → 정수 반환. 없으면 0."""
-    m = re.search(r"(?<!\d)(2[56]\d{4})(?!\d)", filename)
-    if m:
-        return int(m.group(1))
-    return 0
-
-
-def prev_month(period_str):
-    """'2026-01' → '2025-12' (표시용 -1개월)"""
-    y, m = period_str.split("-")
-    y, m = int(y), int(m)
-    if m == 1:
-        return f"{y-1}-12"
-    return f"{y}-{m-1:02d}"
+INVOICE_KEYWORDS = ["자문료", "인보이스", "invoice", "청구", "보수금", "INVOICE"]
 
 
 # ============================================================
-# Google Drive 인증
+# Google API 인증
 # ============================================================
 
 @st.cache_resource
-def get_drive_service():
-    """Google Drive API 서비스 생성 (서비스 계정 인증)"""
+def get_services():
+    """Google Drive + Sheets API 서비스 생성"""
     creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
     creds = service_account.Credentials.from_service_account_info(
         creds_dict,
-        scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        scopes=[
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+        ],
     )
-    return build("drive", "v3", credentials=creds)
+    drive = build("drive", "v3", credentials=creds)
+    sheets = build("sheets", "v4", credentials=creds)
+    return drive, sheets
 
 
 # ============================================================
-# Google Drive 파일 조작
+# 구글 시트 데이터 읽기
 # ============================================================
 
-def list_folder(service, folder_id):
-    """폴더 내 모든 파일/하위폴더 목록"""
-    items = []
-    page_token = None
-    while True:
-        resp = (
-            service.files()
-            .list(
-                q=f"'{folder_id}' in parents and trashed = false",
-                fields="nextPageToken, files(id, name, mimeType, webViewLink)",
-                pageToken=page_token,
-                orderBy="name",
+@st.cache_data(ttl=300, show_spinner=False)
+def read_sheet_data():
+    """
+    구글 시트에서 '정기자문 & 일반자문' 섹션 읽기.
+    반환: (records: list[dict], subtotal_row: dict, errors: list[str])
+    """
+    _, sheets = get_services()
+    errors = []
+
+    try:
+        result = (
+            sheets.spreadsheets()
+            .values()
+            .get(
+                spreadsheetId=SPREADSHEET_ID,
+                range=f"{SHEET_NAME}!A1:S80",
+                valueRenderOption="UNFORMATTED_VALUE",
             )
             .execute()
         )
-        items.extend(resp.get("files", []))
-        page_token = resp.get("nextPageToken")
-        if not page_token:
+    except Exception as e:
+        return [], {}, [f"시트 읽기 실패: {e}"]
+
+    rows = result.get("values", [])
+    if not rows:
+        return [], {}, ["시트에 데이터가 없습니다."]
+
+    # 헤더에서 월 컬럼 위치 찾기 (1~12)
+    month_cols = {}  # {월번호: 열인덱스}
+    for i, row in enumerate(rows):
+        for j, val in enumerate(row):
+            if val == 1 or val == "1":
+                # 이 행이 월 번호 헤더인지 확인 (연속된 1~12)
+                is_header = True
+                for k in range(1, 12):
+                    if j + k < len(row) and (row[j + k] == k + 1 or row[j + k] == str(k + 1)):
+                        continue
+                    else:
+                        is_header = False
+                        break
+                if is_header:
+                    for m in range(12):
+                        month_cols[m + 1] = j + m
+                    break
+        if month_cols:
             break
-    return items
 
+    if not month_cols:
+        return [], {}, ["시트에서 월 헤더를 찾을 수 없습니다."]
 
-def download_file(service, file_id):
-    """파일 바이트 다운로드"""
-    req = service.files().get_media(fileId=file_id)
-    buf = io.BytesIO()
-    dl = MediaIoBaseDownload(buf, req)
-    done = False
-    while not done:
-        _, done = dl.next_chunk()
-    buf.seek(0)
-    return buf
+    # '정기자문' 섹션 찾기
+    start_idx = None
+    end_idx = None
+    subtotal_idx = None
+    firm_col = None  # 업체명 컬럼
+
+    for i, row in enumerate(rows):
+        row_text = " ".join(str(v) for v in row)
+        if "정기자문" in row_text and "일반자문" in row_text:
+            start_idx = i
+            # 업체명은 보통 시작 행과 같은 행 또는 다음 행부터
+            continue
+        if start_idx is not None and "소계" in row_text:
+            subtotal_idx = i
+            end_idx = i
+            break
+
+    if start_idx is None:
+        return [], {}, ["시트에서 '정기자문 & 일반자문' 섹션을 찾을 수 없습니다."]
+
+    # 업체명 컬럼 추정 (정기자문 행의 다음 열들에서 업체명이 있는 컬럼)
+    # 보통 C열(인덱스 2)
+    firm_col = 2
+    content_col = 3  # 내용 컬럼 (D열)
+
+    # 개별 로펌 행 읽기
+    records = []
+    for i in range(start_idx, end_idx):
+        row = rows[i] if i < len(rows) else []
+        if len(row) <= firm_col:
+            continue
+        firm_name = str(row[firm_col]).strip() if row[firm_col] else ""
+        if not firm_name or firm_name == "소계" or "정기자문" in firm_name:
+            continue
+
+        content = str(row[content_col]).strip() if len(row) > content_col and row[content_col] else ""
+
+        for month_num, col_idx in month_cols.items():
+            val = row[col_idx] if col_idx < len(row) else 0
+            if isinstance(val, (int, float)):
+                amount = int(val) if val != 0 else 0
+            else:
+                amount = 0
+            records.append({
+                "업체명": firm_name,
+                "내용": content,
+                "월": month_num,
+                "기간": f"2026-{month_num:02d}",
+                "금액": amount,
+            })
+
+    # 소계 행 읽기
+    subtotal = {}
+    if subtotal_idx is not None and subtotal_idx < len(rows):
+        srow = rows[subtotal_idx]
+        for month_num, col_idx in month_cols.items():
+            val = srow[col_idx] if col_idx < len(srow) else 0
+            if isinstance(val, (int, float)):
+                subtotal[month_num] = int(val)
+            else:
+                subtotal[month_num] = 0
+
+    return records, subtotal, errors
 
 
 # ============================================================
-# 파일 선택 로직
+# 구글 드라이브 PDF 스캔
 # ============================================================
 
-def _has_keyword(filename):
-    """인보이스 키워드 포함 여부"""
-    low = filename.lower()
-    return any(kw.lower() in low for kw in INVOICE_KEYWORDS)
-
-
-def _is_excluded(filename):
-    """제외 대상 여부"""
-    return any(kw in filename for kw in EXCLUDE_KEYWORDS)
-
-
-def select_invoices(files):
-    """
-    파일 목록에서 인보이스를 선택.
-    우선순위: "최종"/"할인 후" PDF → 키워드 매칭 PDF → 모든 PDF → 키워드 xlsx → 모든 xlsx
-    """
-    pdfs = [f for f in files if f["name"].lower().endswith(".pdf") and not _is_excluded(f["name"])]
-    xlsxs = [f for f in files if f["name"].lower().endswith(".xlsx") and not _is_excluded(f["name"])]
-
-    # 1순위: "최종" 또는 "할인 후" PDF
-    final = [f for f in pdfs if "최종" in f["name"] or "할인 후" in f["name"]]
-    if final:
-        return final
-
-    # 2순위: 인보이스 키워드 매칭 PDF
-    kw_pdfs = [f for f in pdfs if _has_keyword(f["name"])]
-    if kw_pdfs:
-        return kw_pdfs
-
-    # 3순위: 모든 PDF
-    if pdfs:
-        return pdfs
-
-    # 4순위: xlsx
-    kw_xlsx = [f for f in xlsxs if _has_keyword(f["name"])]
-    if kw_xlsx:
-        return kw_xlsx
-    return xlsxs
-
-
-# ============================================================
-# 파일명에서 청구 월 추출
-# ============================================================
-
-def extract_month(filename):
-    """파일명/폴더명 → (year, month) 또는 None"""
-
-    # "N월" / "N월분"
+def extract_month_from_filename(filename):
+    """파일명에서 청구 월 추출 → month 정수 또는 None"""
     m = re.search(r"(\d{1,2})\s*월", filename)
     if m:
-        month = int(m.group(1))
-        y = re.search(r"(202[4-9])", filename)
-        return (int(y.group(1)) if y else 2026, month)
-
-    # "2026.06" / "2026. 06"
-    m = re.search(r"(202[4-9])[.\s]+(\d{2})", filename)
+        return int(m.group(1))
+    m = re.search(r"2026[.\s]+(\d{2})", filename)
     if m:
-        return (int(m.group(1)), int(m.group(2)))
-
-    # "(2604)" — DLS 스타일
+        return int(m.group(1))
     m = re.search(r"\(26(\d{2})\)", filename)
     if m:
-        return (2026, int(m.group(1)))
-
-    # "26.04" — 율촌 스타일
+        return int(m.group(1))
     m = re.search(r"(?<!\d)26\.(\d{2})", filename)
     if m:
-        return (2026, int(m.group(1)))
-
-    # "26MMDDDD" — 율촌 ID 스타일 (B-26051222)
+        return int(m.group(1))
     m = re.search(r"26(\d{2})\d{4}", filename)
     if m:
-        return (2026, int(m.group(1)))
-
-    # "20260520"
-    m = re.search(r"(202[4-9])(\d{2})\d{2}", filename)
-    if m:
-        return (int(m.group(1)), int(m.group(2)))
-
+        return int(m.group(1))
     return None
 
 
-# ============================================================
-# PDF / XLSX 금액 파싱
-# ============================================================
-
-def _clean(s):
-    """금액 문자열 → 정수"""
-    return int(re.sub(r"[^\d]", "", s))
-
-
-def parse_pdf_amount(text, firm):
-    """
-    로펌별 PDF 텍스트에서 VAT 제외 최종 금액 추출.
-    각 로펌 인보이스 양식에 맞춘 패턴 사용.
-    """
-    # 공백 정규화
-    t = re.sub(r"\s+", " ", text)
-
-    # --- 로펌별 패턴 ---
-
-    if firm == "광장":
-        # "보수금합계 : 19,976,550 원"
-        m = re.search(r"보수금\s*합\s*계\s*[:：]\s*(?:금\s*)?([\d,]+)\s*원", t)
-        if m:
-            return _clean(m.group(1))
-
-    elif firm == "김앤장":
-        # "자 문 료 ￦ 3,000,000"
-        m = re.search(r"자\s*문\s*료\s*[￦₩W]?\s*([\d,]+)", t)
-        if m:
-            return _clean(m.group(1))
-
-    elif firm == "지평":
-        # "소 계 ￦ 16,029,280"
-        m = re.search(r"소\s*계\s*[￦₩W]?\s*([\d,]+)", t)
-        if m:
-            return _clean(m.group(1))
-
-    elif firm == "D&A":
-        # "공급가 W 5,000,000" — 줄바꿈 포함 가능
-        m = re.search(r"공급가\s*[￦₩W]?\s*([\d,]+)", t)
-        if m:
-            return _clean(m.group(1))
-
-    elif firm.startswith("율촌"):
-        # "1. 보수금 : 27,243,750원" (첫 번째 보수금, 보수금합계가 아닌 것)
-        m = re.search(r"(?<!합)보수금\s*[:：]\s*([\d,]+)\s*원", t)
-        if m:
-            return _clean(m.group(1))
-
-    elif firm == "SLP":
-        # "법률 자문료 15,512,500"
-        m = re.search(r"법률\s*자문료\s*([\d,]+)", t)
-        if m:
-            return _clean(m.group(1))
-
-    # --- 범용 폴백 ---
-    # "소계", "공급가액", "보수금" 뒤 금액
-    m = re.search(r"(?:소\s*계|공급가액?|보수금|자문료)\s*[￦₩W:：]?\s*([\d,]+)", t)
-    if m:
-        val = _clean(m.group(1))
-        if val > 100_000:  # 최소 10만원 이상이어야 의미 있는 금액
-            return val
-
-    return None
-
-
-def parse_xlsx_amount(buf):
-    """
-    DLS 등 xlsx 파일에서 금액 추출.
-    TOTAL 컬럼 합산 또는 '총합계' 셀 값 사용.
-    """
-    try:
-        wb = openpyxl.load_workbook(buf, data_only=True)
-        best_total = 0
-
-        for ws in wb.worksheets:
-            # 템플릿 시트 스킵
-            if "양식" in (ws.title or ""):
-                continue
-
-            # 방법 1: "총합계" 옆의 금액 찾기
-            for row in ws.iter_rows(values_only=False):
-                for i, cell in enumerate(row):
-                    if cell.value and "총합계" in str(cell.value):
-                        # 같은 행의 다른 셀에서 숫자 찾기
-                        for other in row:
-                            v = other.value
-                            if isinstance(v, (int, float)) and v > 10_000:
-                                best_total = max(best_total, int(v))
-                            elif isinstance(v, str):
-                                cleaned = re.sub(r"[^\d]", "", v)
-                                if cleaned and int(cleaned) > 10_000:
-                                    best_total = max(best_total, int(cleaned))
-
-            # 방법 2: TOTAL 컬럼 합산
-            if best_total == 0:
-                header_row = None
-                total_col = None
-                for row in ws.iter_rows(values_only=False):
-                    for cell in row:
-                        if cell.value == "TOTAL":
-                            header_row = cell.row
-                            total_col = cell.column
-                            break
-                    if header_row:
-                        break
-
-                if header_row and total_col:
-                    col_total = 0
-                    for row in ws.iter_rows(
-                        min_row=header_row + 1,
-                        min_col=total_col,
-                        max_col=total_col,
-                    ):
-                        v = row[0].value
-                        if isinstance(v, (int, float)) and v > 0:
-                            col_total += int(v)
-                        elif isinstance(v, str):
-                            cleaned = re.sub(r"[^\d]", "", v)
-                            if cleaned:
-                                col_total += int(cleaned)
-                    if col_total > 0:
-                        best_total = max(best_total, col_total)
-
-        return best_total if best_total > 0 else None
-    except Exception:
-        return None
-
-
-# ============================================================
-# 데이터 수집 파이프라인
-# ============================================================
-
-def get_display_name(folder_name):
-    """폴더명 → 대시보드 표시명"""
-    return FIRM_DISPLAY_NAMES.get(folder_name, folder_name)
+def extract_file_date(filename):
+    """파일명에서 6자리 날짜 추출 → 정수. 없으면 0."""
+    m = re.search(r"(?<!\d)(2[56]\d{4})(?!\d)", filename)
+    return int(m.group(1)) if m else 0
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def collect_invoices():
+def scan_drive_pdfs():
     """
-    전체 로펌 폴더를 스캔하여 인보이스 데이터 수집.
-    반환: (records: list[dict], errors: list[str])
+    드라이브에서 로펌별 PDF 목록 스캔.
+    반환: {폴더명: {월: {name, link, file_date}}}
     """
-    service = get_drive_service()
-    records = []
-    errors = []
+    drive, _ = get_services()
+    pdf_map = {}
 
-    # 루트 폴더의 하위 폴더(= 로펌별 폴더) 조회
-    firm_folders = [
-        f for f in list_folder(service, ROOT_FOLDER_ID)
-        if f["mimeType"] == "application/vnd.google-apps.folder"
-    ]
+    try:
+        # 루트 폴더의 하위 폴더 목록
+        resp = drive.files().list(
+            q=f"'{ROOT_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields="files(id, name)",
+        ).execute()
+        folders = resp.get("files", [])
+    except Exception:
+        return {}
 
-    for folder in firm_folders:
-        firm_raw = folder["name"]
-        firm = get_display_name(firm_raw)
-        contents = list_folder(service, folder["id"])
+    for folder in folders:
+        fname = folder["name"]
+        pdf_map[fname] = {}
 
-        # 파일과 하위폴더 분리
-        sub_folders = [c for c in contents if c["mimeType"] == "application/vnd.google-apps.folder"]
-        direct_files = [c for c in contents if c["mimeType"] != "application/vnd.google-apps.folder"]
+        # 폴더 내 파일 목록
+        try:
+            items = []
+            page_token = None
+            while True:
+                resp = drive.files().list(
+                    q=f"'{folder['id']}' in parents and trashed=false",
+                    fields="nextPageToken, files(id, name, mimeType, webViewLink)",
+                    pageToken=page_token,
+                ).execute()
+                items.extend(resp.get("files", []))
+                page_token = resp.get("nextPageToken")
+                if not page_token:
+                    break
+        except Exception:
+            continue
 
-        # 탐색 대상 그룹: (소스명, 파일목록)
-        groups = []
-        if direct_files:
-            groups.append(("direct", direct_files))
-        for sf in sub_folders:
-            sf_files = [
-                f for f in list_folder(service, sf["id"])
-                if f["mimeType"] != "application/vnd.google-apps.folder"
-            ]
-            if sf_files:
-                groups.append((sf["name"], sf_files))
-
-        for source, files in groups:
-            invoices = select_invoices(files)
-            for inv in invoices:
-                fname = inv["name"]
-
-                # 월 추출: 파일명 → 소스폴더명 순
-                month_info = extract_month(fname)
-                if not month_info and source != "direct":
-                    month_info = extract_month(source)
-                if not month_info:
-                    errors.append(f"[{firm}] 월 추출 실패: {fname}")
-                    continue
-
-                year, month = month_info
-
-                # 금액 추출
-                amount = None
+        # 하위폴더도 탐색 (SLP 같은 경우)
+        sub_files = []
+        for item in items:
+            if item["mimeType"] == "application/vnd.google-apps.folder":
                 try:
-                    if fname.lower().endswith(".pdf"):
-                        buf = download_file(service, inv["id"])
-                        with pdfplumber.open(buf) as pdf:
-                            text = "\n".join(
-                                (p.extract_text() or "") for p in pdf.pages
-                            )
-                        amount = parse_pdf_amount(text, firm)
-                    elif fname.lower().endswith(".xlsx"):
-                        buf = download_file(service, inv["id"])
-                        amount = parse_xlsx_amount(buf)
-                except Exception as e:
-                    errors.append(f"[{firm}] 파싱 오류 ({fname}): {e}")
+                    sr = drive.files().list(
+                        q=f"'{item['id']}' in parents and trashed=false",
+                        fields="files(id, name, mimeType, webViewLink)",
+                    ).execute()
+                    sub_files.extend(sr.get("files", []))
+                except Exception:
+                    pass
+            else:
+                sub_files.append(item)
 
-                if amount and amount > 0:
-                    records.append(
-                        {
-                            "로펌": firm,
-                            "연도": year,
-                            "월": month,
-                            "기간": f"{year}-{month:02d}",
-                            "금액": amount,
-                            "파일명": fname,
-                            "링크": inv.get("webViewLink", ""),
-                            "파일날짜": extract_file_date(fname),
-                        }
+        # PDF 파일에서 월 추출
+        for f in sub_files:
+            if not f["name"].lower().endswith((".pdf", ".xlsx")):
+                continue
+            month = extract_month_from_filename(f["name"])
+            if month is None:
+                continue
+            fdate = extract_file_date(f["name"])
+
+            # 같은 월에 여러 파일이면 파일명 날짜가 가장 큰 것만 유지
+            if month not in pdf_map[fname] or fdate > pdf_map[fname][month].get("file_date", 0):
+                pdf_map[fname][month] = {
+                    "name": f["name"],
+                    "link": f.get("webViewLink", ""),
+                    "file_date": fdate,
+                }
+
+    return pdf_map
+
+
+# ============================================================
+# 데이터 병합
+# ============================================================
+
+def get_drive_folder(sheet_firm):
+    """시트 업체명 → 드라이브 폴더명"""
+    return FIRM_NAME_MAP.get(sheet_firm, sheet_firm)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def build_dashboard_data():
+    """시트 데이터 + 드라이브 PDF → 대시보드용 데이터 생성"""
+    sheet_records, subtotal, sheet_errors = read_sheet_data()
+    pdf_map = scan_drive_pdfs()
+    errors = list(sheet_errors)
+
+    rows = []
+    firms_seen = set()
+
+    for rec in sheet_records:
+        firm = rec["업체명"]
+        month = rec["월"]
+        amount = rec["금액"]
+        drive_folder = get_drive_folder(firm)
+        firms_seen.add(firm)
+
+        # PDF 존재 여부 확인
+        pdf_info = pdf_map.get(drive_folder, {}).get(month)
+        has_pdf = pdf_info is not None
+        pdf_link = pdf_info["link"] if pdf_info else ""
+        pdf_name = pdf_info["name"] if pdf_info else ""
+
+        # 판정
+        if amount > 0 and has_pdf:
+            status = "확정"
+        elif amount == 0 and has_pdf:
+            status = "⚠️ 법무비용 업데이트"
+            amount = 0
+        elif amount > 0 and not has_pdf:
+            status = "예측"  # 무시
+            continue
+        else:
+            continue  # 금액 0 + PDF 없음 → 스킵
+
+        rows.append({
+            "로펌": firm,
+            "월": month,
+            "기간": rec["기간"],
+            "금액": amount,
+            "상태": status,
+            "PDF링크": pdf_link,
+            "파일명": pdf_name,
+        })
+
+    # 드라이브에 PDF 있는데 시트에 해당 로펌이 아예 없는 경우 체크
+    for folder_name, months in pdf_map.items():
+        # 역매핑: 드라이브 폴더명 → 시트 업체명
+        reverse_map = {v: k for k, v in FIRM_NAME_MAP.items()}
+        sheet_name = reverse_map.get(folder_name, folder_name)
+        if sheet_name not in firms_seen:
+            for month, info in months.items():
+                rows.append({
+                    "로펌": sheet_name,
+                    "월": month,
+                    "기간": f"2026-{month:02d}",
+                    "금액": 0,
+                    "상태": "⚠️ 법무비용 업데이트",
+                    "PDF링크": info["link"],
+                    "파일명": info["name"],
+                })
+
+    # 소계 검증
+    if subtotal:
+        df_tmp = pd.DataFrame(rows)
+        if not df_tmp.empty:
+            confirmed = df_tmp[df_tmp["상태"] == "확정"]
+            for month_num, expected in subtotal.items():
+                if expected == 0:
+                    continue
+                actual = confirmed[confirmed["월"] == month_num]["금액"].sum()
+                if actual > 0 and abs(actual - expected) > 100:
+                    errors.append(
+                        f"⚠️ 소계 불일치 {month_num}월: 시트 소계 ₩{expected:,.0f} vs 확정 합산 ₩{actual:,.0f} (차이: ₩{abs(actual-expected):,.0f})"
                     )
-                elif amount is None:
-                    errors.append(f"[{firm}] 금액 추출 실패: {fname}")
 
-    # 중복 제거: 같은 로펌+같은 월 → 파일명 날짜가 가장 큰 것만 유지
-    if records:
-        df_tmp = pd.DataFrame(records)
-        df_tmp = df_tmp.sort_values("파일날짜", ascending=False)
-        df_tmp = df_tmp.drop_duplicates(subset=["로펌", "기간"], keep="first")
-        records = df_tmp.to_dict("records")
-
-    # 표시기간 추가 (인보이스 월 - 1 = 비용 발생 월)
-    for r in records:
-        r["표시기간"] = prev_month(r["기간"])
-        disp_y, disp_m = r["표시기간"].split("-")
-        r["표시연도"] = int(disp_y)
-        r["표시월"] = int(disp_m)
-
-    return records, errors
+    return rows, errors
 
 
 # ============================================================
@@ -459,15 +404,12 @@ def collect_invoices():
 # ============================================================
 
 def apply_custom_css():
-    """대시보드 커스텀 스타일"""
     st.markdown(
         """
         <style>
-        /* 전체 폰트 크기 */
         html, body, [class*="css"] {
             font-size: 16px;
         }
-        /* KPI 카드 */
         div[data-testid="stMetric"] {
             background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
             border-radius: 12px;
@@ -483,7 +425,6 @@ def apply_custom_css():
             font-weight: 700;
             color: #1B4F72;
         }
-        /* 사이드바 */
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
@@ -497,30 +438,27 @@ def main():
     apply_custom_css()
 
     st.title("⚖️ 외부 로펌 비용 대시보드")
-    st.caption("대웅제약 법무1팀 · 구글 드라이브 인보이스 자동 집계")
+    st.caption("대웅제약 법무1팀 · 구글 시트 + 드라이브 PDF 연동")
 
     # ---- 데이터 로드 ----
-    with st.spinner("📂 구글 드라이브에서 인보이스를 읽는 중..."):
-        records, errors = collect_invoices()
+    with st.spinner("📂 데이터를 읽는 중..."):
+        rows, errors = build_dashboard_data()
 
-    if not records:
-        st.error("인보이스 데이터를 찾을 수 없습니다. 폴더 공유 설정을 확인해 주세요.")
+    if not rows:
+        st.error("데이터를 찾을 수 없습니다. 시트/폴더 공유 설정을 확인해 주세요.")
         if errors:
             with st.expander("⚠️ 오류 상세"):
                 for e in errors:
                     st.text(e)
         st.stop()
 
-    df = pd.DataFrame(records)
+    df = pd.DataFrame(rows)
 
     # ---- 사이드바 필터 ----
     with st.sidebar:
         st.header("📊 조회 설정")
 
         period_unit = st.radio("집계 단위", ["월별", "분기별", "반기별", "연도별"])
-
-        years = sorted(df["표시연도"].unique())
-        sel_year = st.selectbox("연도", years, index=len(years) - 1)
 
         all_firms = sorted(df["로펌"].unique())
         sel_firms = st.multiselect("로펌", all_firms, default=all_firms)
@@ -531,39 +469,44 @@ def main():
             st.rerun()
 
         if errors:
-            with st.expander(f"⚠️ 파싱 이슈 ({len(errors)}건)"):
+            with st.expander(f"⚠️ 이슈 ({len(errors)}건)"):
                 for e in errors:
                     st.caption(e)
 
     # ---- 필터 적용 ----
-    fdf = df[(df["표시연도"] == sel_year) & (df["로펌"].isin(sel_firms))].copy()
-    if fdf.empty:
-        st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+    fdf = df[df["로펌"].isin(sel_firms)].copy()
+    confirmed = fdf[fdf["상태"] == "확정"].copy()
+
+    if confirmed.empty:
+        st.warning("확정된 데이터가 없습니다.")
+        # 법무비용 업데이트 필요 항목 표시
+        updates = fdf[fdf["상태"] == "⚠️ 법무비용 업데이트"]
+        if not updates.empty:
+            st.subheader("⚠️ 법무비용 업데이트 필요")
+            st.dataframe(updates[["로펌", "기간", "파일명"]], hide_index=True)
         st.stop()
 
     # ---- 기간 집계 ----
-    agg = fdf.groupby(["로펌", "표시연도", "표시월", "표시기간"], as_index=False)["금액"].sum()
+    agg = confirmed.groupby(["로펌", "월", "기간"], as_index=False)["금액"].sum()
 
     if period_unit == "월별":
-        agg["집계"] = agg["표시기간"]
+        agg["집계"] = agg["기간"]
     elif period_unit == "분기별":
-        agg["집계"] = agg.apply(lambda r: f"{r['표시연도']}-Q{(r['표시월']-1)//3+1}", axis=1)
+        agg["집계"] = agg["월"].apply(lambda m: f"2026-Q{(m-1)//3+1}")
     elif period_unit == "반기별":
-        agg["집계"] = agg.apply(
-            lambda r: f"{r['표시연도']}-{'상반기' if r['표시월'] <= 6 else '하반기'}", axis=1
-        )
+        agg["집계"] = agg["월"].apply(lambda m: f"2026-{'상반기' if m <= 6 else '하반기'}")
     else:
-        agg["집계"] = agg["표시연도"].astype(str)
+        agg["집계"] = "2026"
 
     chart_df = agg.groupby(["집계", "로펌"], as_index=False)["금액"].sum()
 
     # ---- KPI ----
     c1, c2, c3, c4 = st.columns(4)
-    total = fdf["금액"].sum()
-    monthly_totals = fdf.groupby("표시기간")["금액"].sum()
+    total = confirmed["금액"].sum()
+    monthly_totals = confirmed.groupby("기간")["금액"].sum()
     avg = monthly_totals.mean()
     peak = monthly_totals.idxmax() if not monthly_totals.empty else "-"
-    n_firms = fdf["로펌"].nunique()
+    n_firms = confirmed["로펌"].nunique()
 
     c1.metric("총 비용 (VAT 제외)", f"₩{total:,.0f}")
     c2.metric("월평균", f"₩{avg:,.0f}")
@@ -573,34 +516,40 @@ def main():
     st.divider()
 
     # ---- 최근 3개월 요약 (클릭 가능 HTML 테이블) ----
-    recent_months = sorted(fdf["표시기간"].unique(), reverse=True)[:3]
-    firms_sorted = sorted(fdf["로펌"].unique())
+    recent_months = sorted(confirmed["기간"].unique(), reverse=True)[:3]
+    firms_sorted = sorted(confirmed["로펌"].unique())
 
     html = '<table style="width:100%; border-collapse:collapse; font-size:15px;">'
     html += '<tr style="background:#f1f3f5; border-bottom:2px solid #dee2e6;">'
-    html += '<th style="padding:10px; text-align:left;">비용발생월</th>'
+    html += '<th style="padding:10px; text-align:center;">기간</th>'
     for firm in firms_sorted:
-        html += f'<th style="padding:10px; text-align:right;">{firm}</th>'
+        html += f'<th style="padding:10px; text-align:center;">{firm}</th>'
     html += '</tr>'
 
     for period in recent_months:
         html += '<tr style="border-bottom:1px solid #dee2e6;">'
-        html += f'<td style="padding:10px; font-weight:600;">{period}</td>'
+        html += f'<td style="padding:10px; font-weight:600; text-align:center;">{period}</td>'
         for firm in firms_sorted:
-            row_data = fdf[(fdf["로펌"] == firm) & (fdf["표시기간"] == period)]
+            row_data = confirmed[(confirmed["로펌"] == firm) & (confirmed["기간"] == period)]
             if not row_data.empty:
                 amt = row_data["금액"].sum()
-                link = row_data.iloc[0]["링크"]
-                html += f'<td style="padding:10px; text-align:right;">'
-                html += f'<a href="{link}" target="_blank" style="color:#1B4F72; text-decoration:none; font-weight:500;">₩{amt:,.0f}</a>'
-                html += '</td>'
+                link = row_data.iloc[0]["PDF링크"]
+                if link:
+                    html += f'<td style="padding:10px; text-align:center;">'
+                    html += f'<a href="{link}" target="_blank" style="color:#1B4F72; text-decoration:none; font-weight:500;">₩{amt:,.0f}</a>'
+                    html += '</td>'
+                else:
+                    html += f'<td style="padding:10px; text-align:center;">₩{amt:,.0f}</td>'
             else:
-                html += '<td style="padding:10px; text-align:right; color:#ccc;">-</td>'
+                html += '<td style="padding:10px; text-align:center; color:#ccc;">-</td>'
         html += '</tr>'
     html += '</table>'
 
     st.markdown(html, unsafe_allow_html=True)
     st.caption("💡 금액을 클릭하면 인보이스 PDF가 새 탭에서 열립니다.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.divider()
 
     # ---- 막대 차트 ----
     periods_sorted = sorted(chart_df["집계"].unique())
@@ -625,7 +574,7 @@ def main():
 
     fig.update_layout(
         barmode="group",
-        xaxis=dict(title="비용발생월", categoryorder="array", categoryarray=periods_sorted, tickfont=dict(size=13)),
+        xaxis=dict(title="기간", categoryorder="array", categoryarray=periods_sorted, tickfont=dict(size=13)),
         yaxis=dict(title="금액 (원)", tickformat=",", tickfont=dict(size=13)),
         legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
         height=480,
@@ -634,6 +583,22 @@ def main():
         hoverlabel=dict(font_size=14),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    # ---- ⚠️ 법무비용 업데이트 필요 ----
+    updates = fdf[fdf["상태"] == "⚠️ 법무비용 업데이트"]
+    if not updates.empty:
+        st.subheader("⚠️ 법무비용 업데이트 필요")
+        st.caption("PDF가 드라이브에 있으나 시트에 금액이 미입력된 항목입니다.")
+        utbl = updates[["로펌", "기간", "파일명", "PDF링크"]].copy()
+        utbl = utbl.sort_values(["기간", "로펌"]).reset_index(drop=True)
+        st.dataframe(
+            utbl,
+            column_config={
+                "PDF링크": st.column_config.LinkColumn("PDF", display_text="📄 열기"),
+            },
+            hide_index=True,
+            use_container_width=True,
+        )
 
     # ---- 상세 내역 (필터 포함) ----
     st.subheader("📋 상세 내역")
@@ -644,36 +609,35 @@ def main():
             "로펌 필터", firms_sorted, default=firms_sorted, key="detail_firm"
         )
     with fc2:
-        all_months = sorted(fdf["표시기간"].unique(), reverse=True)
+        all_months = sorted(confirmed["기간"].unique(), reverse=True)
         detail_months = st.multiselect(
             "월 필터", all_months, default=all_months, key="detail_month"
         )
 
-    tbl = fdf[
-        (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))
-    ][["로펌", "표시기간", "금액", "파일명", "링크"]].copy()
-    tbl = tbl.sort_values(["표시기간", "로펌"], ascending=[False, True]).reset_index(drop=True)
+    tbl = confirmed[
+        (confirmed["로펌"].isin(detail_firms)) & (confirmed["기간"].isin(detail_months))
+    ][["로펌", "기간", "금액", "파일명", "PDF링크"]].copy()
+    tbl = tbl.sort_values(["기간", "로펌"], ascending=[False, True]).reset_index(drop=True)
     tbl["금액(VAT제외)"] = tbl["금액"].apply(lambda x: f"₩{x:,.0f}")
     tbl = tbl.drop(columns=["금액"])
-    tbl = tbl.rename(columns={"표시기간": "비용발생월"})
 
     st.dataframe(
         tbl,
         column_config={
-            "링크": st.column_config.LinkColumn("PDF", display_text="📄 열기"),
+            "PDF링크": st.column_config.LinkColumn("PDF", display_text="📄 열기"),
             "파일명": st.column_config.TextColumn("파일명", width="large"),
         },
         hide_index=True,
         use_container_width=True,
     )
 
-    # ---- 로펌×기간 피벗 테이블 ----
+    # ---- 로펌×기간 피벗 ----
     st.subheader("📊 로펌별 기간 합계")
 
-    pivot = fdf.pivot_table(
+    pivot = confirmed.pivot_table(
         values="금액",
         index="로펌",
-        columns="표시기간",
+        columns="기간",
         aggfunc="sum",
         fill_value=0,
         margins=True,
@@ -690,8 +654,5 @@ def main():
     )
 
 
-# ============================================================
-# 실행
-# ============================================================
 if __name__ == "__main__":
     main()

@@ -67,8 +67,53 @@ def extract_file_date(filename):
     return 0
 
 
+def extract_month_from_pdf_text(text):
+    """
+    PDF 본문에서 자문 수행 월 추출.
+    광장: "보수금(2026 년 4 월)"
+    율촌: "2026-05-01부터 2026-05-31까지"
+    D&A: "1월 법률자문료" 또는 "(2026. 1.)"
+    지평/김앤장/SLP: 유사 패턴
+    """
+    if not text:
+        return None
+    t = re.sub(r"\s+", " ", text)
+
+    # 광장: "보수금(2026년 4월)" 또는 "보수금(2026 년 4 월)"
+    m = re.search(r"보수금\s*\(\s*(202[4-9])\s*년\s*(\d{1,2})\s*월\s*\)", t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    # 율촌: "2026-05-01부터 2026-05-31까지"
+    m = re.search(r"(202[4-9])-(\d{2})-\d{2}\s*부터\s*(202[4-9])-(\d{2})-\d{2}", t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    # "N월 법률자문료" / "N월 자문료" (D&A 스타일)
+    m = re.search(r"(\d{1,2})\s*월\s*(?:법률\s*)?자문료", t)
+    if m:
+        return (2026, int(m.group(1)))
+
+    # "(2026. N.)" / "(2026.N.)" (D&A Description Of Services 스타일)
+    m = re.search(r"\(\s*(202[4-9])\.\s*(\d{1,2})\.\s*\)", t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    # 김앤장: "2026 년 5 월 1 일부터 2026 년 5 월 31 일까지"
+    m = re.search(r"(202[4-9])\s*년\s*(\d{1,2})\s*월\s*\d+\s*일\s*부터", t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    # 지평/일반: "2026년 N월"
+    m = re.search(r"(202[4-9])\s*년\s*(\d{1,2})\s*월", t)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+
+    return None
+
+
 def prev_month(period_str):
-    """'2026-01' → '2025-12' (표시용 -1개월)"""
+    """(사용 안 함) '2026-01' → '2025-12'"""
     y, m = period_str.split("-")
     y, m = int(y), int(m)
     if m == 1:
@@ -253,8 +298,16 @@ def parse_pdf_amount(text, firm):
             return _clean(m.group(1))
 
     elif firm == "D&A":
-        # "공급가 W 5,000,000" — 줄바꿈 포함 가능
+        # "공급가 34,269,600" 또는 "자문료 합계 (20% 할인 후) 34,269,600"
+        m = re.search(r"자문료\s*합계\s*\(\s*\d+\s*%\s*할인\s*후\s*\)\s*([\d,]+)", t)
+        if m:
+            return _clean(m.group(1))
         m = re.search(r"공급가\s*[￦₩W]?\s*([\d,]+)", t)
+        if m:
+            return _clean(m.group(1))
+        # "총 법률자문료(4+5) 37,696,560" 은 VAT 포함이라 제외
+        # "자문료 합계 (20% 할인 후)" 없으면 "자문료 합계 (할인 전)" 이라도 사용
+        m = re.search(r"자문료\s*합계\s*\(\s*할인\s*전\s*\)\s*([\d,]+)", t)
         if m:
             return _clean(m.group(1))
 
@@ -267,6 +320,26 @@ def parse_pdf_amount(text, firm):
     elif firm == "SLP":
         # "법률 자문료 15,512,500"
         m = re.search(r"법률\s*자문료\s*([\d,]+)", t)
+        if m:
+            return _clean(m.group(1))
+        # 새로운 SLP 양식 (2601_법무검토인보이스): TOTAL 컬럼 합산 필요
+        # PDF에서는 표 파싱이 어려우니 마지막 큰 숫자 찾기
+        amounts = re.findall(r"₩\s*([\d,]+)", t)
+        if amounts:
+            # 마지막 것이 총합계일 가능성이 높음
+            try:
+                total = _clean(amounts[-1])
+                if total > 100_000:
+                    return total
+            except Exception:
+                pass
+
+    elif firm == "세종_인도네시아" or firm == "세종":
+        # "총 법률자문료" 또는 "청구 금액" 등
+        m = re.search(r"청구\s*금액\s*[:：]?\s*([\d,]+)\s*원", t)
+        if m:
+            return _clean(m.group(1))
+        m = re.search(r"자문료\s*합계\s*[:：]?\s*([\d,]+)\s*원", t)
         if m:
             return _clean(m.group(1))
 
@@ -395,18 +468,14 @@ def collect_invoices():
             for inv in invoices:
                 fname = inv["name"]
 
-                # 월 추출: 파일명 → 소스폴더명 순
-                month_info = extract_month(fname)
-                if not month_info and source != "direct":
-                    month_info = extract_month(source)
-                if not month_info:
-                    errors.append(f"[{firm}] 월 추출 실패: {fname}")
-                    continue
+                # 파일명 우선 월 추출 (백업용)
+                month_info_from_name = extract_month(fname)
+                if not month_info_from_name and source != "direct":
+                    month_info_from_name = extract_month(source)
 
-                year, month = month_info
-
-                # 금액 추출
+                # 금액 + PDF 텍스트 기반 월 추출
                 amount = None
+                pdf_month_info = None
                 try:
                     if fname.lower().endswith(".pdf"):
                         buf = download_file(service, inv["id"])
@@ -414,12 +483,22 @@ def collect_invoices():
                             text = "\n".join(
                                 (p.extract_text() or "") for p in pdf.pages
                             )
+                        # PDF 본문에서 자문 월 추출 (최우선)
+                        pdf_month_info = extract_month_from_pdf_text(text)
                         amount = parse_pdf_amount(text, firm)
                     elif fname.lower().endswith(".xlsx"):
                         buf = download_file(service, inv["id"])
                         amount = parse_xlsx_amount(buf)
                 except Exception as e:
                     errors.append(f"[{firm}] 파싱 오류 ({fname}): {e}")
+
+                # 월 결정: PDF 텍스트 → 파일명 순
+                month_info = pdf_month_info or month_info_from_name
+                if not month_info:
+                    errors.append(f"[{firm}] 월 추출 실패: {fname}")
+                    continue
+
+                year, month = month_info
 
                 if amount and amount > 0:
                     records.append(
@@ -444,12 +523,11 @@ def collect_invoices():
         df_tmp = df_tmp.drop_duplicates(subset=["로펌", "기간"], keep="first")
         records = df_tmp.to_dict("records")
 
-    # 표시기간 추가 (인보이스 월 - 1 = 비용 발생 월)
+    # 표시기간 = 실제 자문 수행 월 (PDF에서 추출된 그대로)
     for r in records:
-        r["표시기간"] = prev_month(r["기간"])
-        disp_y, disp_m = r["표시기간"].split("-")
-        r["표시연도"] = int(disp_y)
-        r["표시월"] = int(disp_m)
+        r["표시기간"] = r["기간"]
+        r["표시연도"] = r["연도"]
+        r["표시월"] = r["월"]
 
     return records, errors
 
@@ -493,7 +571,31 @@ def apply_custom_css():
     )
 
 
+def check_password():
+    """비밀번호 인증. 통과 시 True 반환."""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    expected = st.secrets.get("DASHBOARD_PASSWORD", "dw2026")
+
+    st.title("🔒 외부 로펌 비용 대시보드")
+    st.caption("대웅제약 법무1팀 · 접근 인증")
+    st.markdown("")
+
+    pw = st.text_input("비밀번호", type="password", key="pw_input")
+    if st.button("확인", type="primary"):
+        if pw == expected:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 일치하지 않습니다.")
+    return False
+
+
 def main():
+    if not check_password():
+        st.stop()
+
     apply_custom_css()
 
     st.title("⚖️ 외부 로펌 비용 대시보드")

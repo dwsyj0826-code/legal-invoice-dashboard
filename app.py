@@ -21,7 +21,7 @@ import json
 # 페이지 설정
 # ============================================================
 st.set_page_config(
-    page_title="법무팀 로펌 비용 대시보드",
+    page_title="정기자문 비용 현황",
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -578,7 +578,7 @@ def check_password():
 
     expected = st.secrets.get("DASHBOARD_PASSWORD", "dw2026")
 
-    st.title("🔒 외부 로펌 비용 대시보드")
+    st.title("🔒 정기자문 비용 현황")
     st.caption("대웅제약 법무1팀 · 접근 인증")
     st.markdown("")
 
@@ -598,7 +598,7 @@ def main():
 
     apply_custom_css()
 
-    st.title("⚖️ 외부 로펌 비용 대시보드")
+    st.title("⚖️ 정기자문 비용 현황")
     st.caption("대웅제약 법무1팀 · 구글 드라이브 인보이스 자동 집계")
 
     # ---- 데이터 로드 ----

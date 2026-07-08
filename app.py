@@ -431,6 +431,10 @@ def apply_custom_css():
     st.markdown(
         """
         <style>
+        /* 전체 폰트 크기 */
+        html, body, [class*="css"] {
+            font-size: 16px;
+        }
         /* KPI 카드 */
         div[data-testid="stMetric"] {
             background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
@@ -439,11 +443,11 @@ def apply_custom_css():
             border-left: 4px solid #1B4F72;
         }
         div[data-testid="stMetric"] label {
-            font-size: 0.85rem !important;
+            font-size: 0.95rem !important;
             color: #495057;
         }
         div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-            font-size: 1.4rem !important;
+            font-size: 1.6rem !important;
             font-weight: 700;
             color: #1B4F72;
         }
@@ -537,20 +541,13 @@ def main():
 
     st.divider()
 
-    # ---- 이번달 / 지난달 요약 테이블 ----
-    from datetime import datetime
-
-    now = datetime.now()
-    this_month = f"{now.year}-{now.month:02d}"
-    if now.month == 1:
-        last_month = f"{now.year - 1}-12"
-    else:
-        last_month = f"{now.year}-{now.month - 1:02d}"
+    # ---- 최근 2개월 요약 테이블 ----
+    recent_months = sorted(fdf["기간"].unique(), reverse=True)[:2]
 
     month_summary = fdf.groupby(["로펌", "기간"])["금액"].sum().reset_index()
     summary_rows = []
-    for label, period in [("이번달", this_month), ("지난달", last_month)]:
-        row = {"기간": f"{label} ({period})"}
+    for period in recent_months:
+        row = {"기간": period}
         for firm in sorted(fdf["로펌"].unique()):
             val = month_summary[
                 (month_summary["로펌"] == firm) & (month_summary["기간"] == period)

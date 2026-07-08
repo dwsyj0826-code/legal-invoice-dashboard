@@ -59,6 +59,23 @@ FIRM_DISPLAY_NAMES = {
 }
 
 
+def extract_file_date(filename):
+    """파일명에서 6자리 날짜(YYMMDD) 추출 → 정수 반환. 없으면 0."""
+    m = re.search(r"(?<!\d)(2[56]\d{4})(?!\d)", filename)
+    if m:
+        return int(m.group(1))
+    return 0
+
+
+def prev_month(period_str):
+    """'2026-01' → '2025-12' (표시용 -1개월)"""
+    y, m = period_str.split("-")
+    y, m = int(y), int(m)
+    if m == 1:
+        return f"{y-1}-12"
+    return f"{y}-{m-1:02d}"
+
+
 # ============================================================
 # Google Drive 인증
 # ============================================================
@@ -414,10 +431,25 @@ def collect_invoices():
                             "금액": amount,
                             "파일명": fname,
                             "링크": inv.get("webViewLink", ""),
+                            "파일날짜": extract_file_date(fname),
                         }
                     )
                 elif amount is None:
                     errors.append(f"[{firm}] 금액 추출 실패: {fname}")
+
+    # 중복 제거: 같은 로펌+같은 월 → 파일명 날짜가 가장 큰 것만 유지
+    if records:
+        df_tmp = pd.DataFrame(records)
+        df_tmp = df_tmp.sort_values("파일날짜", ascending=False)
+        df_tmp = df_tmp.drop_duplicates(subset=["로펌", "기간"], keep="first")
+        records = df_tmp.to_dict("records")
+
+    # 표시기간 추가 (인보이스 월 - 1 = 비용 발생 월)
+    for r in records:
+        r["표시기간"] = prev_month(r["기간"])
+        disp_y, disp_m = r["표시기간"].split("-")
+        r["표시연도"] = int(disp_y)
+        r["표시월"] = int(disp_m)
 
     return records, errors
 
@@ -487,7 +519,7 @@ def main():
 
         period_unit = st.radio("집계 단위", ["월별", "분기별", "반기별", "연도별"])
 
-        years = sorted(df["연도"].unique())
+        years = sorted(df["표시연도"].unique())
         sel_year = st.selectbox("연도", years, index=len(years) - 1)
 
         all_firms = sorted(df["로펌"].unique())
@@ -504,32 +536,31 @@ def main():
                     st.caption(e)
 
     # ---- 필터 적용 ----
-    fdf = df[(df["연도"] == sel_year) & (df["로펌"].isin(sel_firms))].copy()
+    fdf = df[(df["표시연도"] == sel_year) & (df["로펌"].isin(sel_firms))].copy()
     if fdf.empty:
         st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
         st.stop()
 
-    # 동일 로펌+기간에 여러 파일이 있을 수 있으므로 합산
-    agg = fdf.groupby(["로펌", "연도", "월", "기간"], as_index=False)["금액"].sum()
-
     # ---- 기간 집계 ----
+    agg = fdf.groupby(["로펌", "표시연도", "표시월", "표시기간"], as_index=False)["금액"].sum()
+
     if period_unit == "월별":
-        agg["집계"] = agg["기간"]
+        agg["집계"] = agg["표시기간"]
     elif period_unit == "분기별":
-        agg["집계"] = agg.apply(lambda r: f"{r['연도']}-Q{(r['월']-1)//3+1}", axis=1)
+        agg["집계"] = agg.apply(lambda r: f"{r['표시연도']}-Q{(r['표시월']-1)//3+1}", axis=1)
     elif period_unit == "반기별":
         agg["집계"] = agg.apply(
-            lambda r: f"{r['연도']}-{'상반기' if r['월'] <= 6 else '하반기'}", axis=1
+            lambda r: f"{r['표시연도']}-{'상반기' if r['표시월'] <= 6 else '하반기'}", axis=1
         )
     else:
-        agg["집계"] = agg["연도"].astype(str)
+        agg["집계"] = agg["표시연도"].astype(str)
 
     chart_df = agg.groupby(["집계", "로펌"], as_index=False)["금액"].sum()
 
     # ---- KPI ----
     c1, c2, c3, c4 = st.columns(4)
     total = fdf["금액"].sum()
-    monthly_totals = fdf.groupby("기간")["금액"].sum()
+    monthly_totals = fdf.groupby("표시기간")["금액"].sum()
     avg = monthly_totals.mean()
     peak = monthly_totals.idxmax() if not monthly_totals.empty else "-"
     n_firms = fdf["로펌"].nunique()
@@ -541,23 +572,35 @@ def main():
 
     st.divider()
 
-    # ---- 최근 2개월 요약 테이블 ----
-    recent_months = sorted(fdf["기간"].unique(), reverse=True)[:2]
+    # ---- 최근 3개월 요약 (클릭 가능 HTML 테이블) ----
+    recent_months = sorted(fdf["표시기간"].unique(), reverse=True)[:3]
+    firms_sorted = sorted(fdf["로펌"].unique())
 
-    month_summary = fdf.groupby(["로펌", "기간"])["금액"].sum().reset_index()
-    summary_rows = []
+    html = '<table style="width:100%; border-collapse:collapse; font-size:15px;">'
+    html += '<tr style="background:#f1f3f5; border-bottom:2px solid #dee2e6;">'
+    html += '<th style="padding:10px; text-align:left;">비용발생월</th>'
+    for firm in firms_sorted:
+        html += f'<th style="padding:10px; text-align:right;">{firm}</th>'
+    html += '</tr>'
+
     for period in recent_months:
-        row = {"기간": period}
-        for firm in sorted(fdf["로펌"].unique()):
-            val = month_summary[
-                (month_summary["로펌"] == firm) & (month_summary["기간"] == period)
-            ]["금액"].sum()
-            row[firm] = f"₩{val:,.0f}" if val > 0 else "-"
-        summary_rows.append(row)
+        html += '<tr style="border-bottom:1px solid #dee2e6;">'
+        html += f'<td style="padding:10px; font-weight:600;">{period}</td>'
+        for firm in firms_sorted:
+            row_data = fdf[(fdf["로펌"] == firm) & (fdf["표시기간"] == period)]
+            if not row_data.empty:
+                amt = row_data["금액"].sum()
+                link = row_data.iloc[0]["링크"]
+                html += f'<td style="padding:10px; text-align:right;">'
+                html += f'<a href="{link}" target="_blank" style="color:#1B4F72; text-decoration:none; font-weight:500;">₩{amt:,.0f}</a>'
+                html += '</td>'
+            else:
+                html += '<td style="padding:10px; text-align:right; color:#ccc;">-</td>'
+        html += '</tr>'
+    html += '</table>'
 
-    if summary_rows:
-        summary_df = pd.DataFrame(summary_rows).set_index("기간")
-        st.dataframe(summary_df, use_container_width=True)
+    st.markdown(html, unsafe_allow_html=True)
+    st.caption("💡 금액을 클릭하면 인보이스 PDF가 새 탭에서 열립니다.")
 
     # ---- 막대 차트 ----
     periods_sorted = sorted(chart_df["집계"].unique())
@@ -575,34 +618,48 @@ def main():
                 textposition="inside",
                 textangle=0,
                 constraintext="none",
-                textfont=dict(size=9, color="white"),
+                textfont=dict(size=11, color="white"),
                 hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
             )
         )
 
     fig.update_layout(
         barmode="group",
-        xaxis=dict(title="기간", categoryorder="array", categoryarray=periods_sorted),
-        yaxis=dict(title="금액 (원)", tickformat=","),
-        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center"),
+        xaxis=dict(title="비용발생월", categoryorder="array", categoryarray=periods_sorted, tickfont=dict(size=13)),
+        yaxis=dict(title="금액 (원)", tickformat=",", tickfont=dict(size=13)),
+        legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
         height=480,
         margin=dict(t=20, b=80),
         template="plotly_white",
-        hoverlabel=dict(font_size=13),
+        hoverlabel=dict(font_size=14),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- 상세 테이블 (PDF 링크 포함) ----
+    # ---- 상세 내역 (필터 포함) ----
     st.subheader("📋 상세 내역")
-    st.caption("📄 열기를 클릭하면 해당 인보이스 PDF가 구글 드라이브에서 열립니다.")
 
-    tbl = fdf[["로펌", "기간", "금액", "파일명", "링크"]].copy()
-    tbl = tbl.sort_values(["기간", "로펌"]).reset_index(drop=True)
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        detail_firms = st.multiselect(
+            "로펌 필터", firms_sorted, default=firms_sorted, key="detail_firm"
+        )
+    with fc2:
+        all_months = sorted(fdf["표시기간"].unique(), reverse=True)
+        detail_months = st.multiselect(
+            "월 필터", all_months, default=all_months, key="detail_month"
+        )
+
+    tbl = fdf[
+        (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))
+    ][["로펌", "표시기간", "금액", "파일명", "링크"]].copy()
+    tbl = tbl.sort_values(["표시기간", "로펌"], ascending=[False, True]).reset_index(drop=True)
+    tbl["금액(VAT제외)"] = tbl["금액"].apply(lambda x: f"₩{x:,.0f}")
+    tbl = tbl.drop(columns=["금액"])
+    tbl = tbl.rename(columns={"표시기간": "비용발생월"})
 
     st.dataframe(
         tbl,
         column_config={
-            "금액": st.column_config.NumberColumn("금액(VAT제외)", format="₩,.0f"),
             "링크": st.column_config.LinkColumn("PDF", display_text="📄 열기"),
             "파일명": st.column_config.TextColumn("파일명", width="large"),
         },
@@ -616,13 +673,12 @@ def main():
     pivot = fdf.pivot_table(
         values="금액",
         index="로펌",
-        columns="기간",
+        columns="표시기간",
         aggfunc="sum",
         fill_value=0,
         margins=True,
         margins_name="합계",
     )
-    # 컬럼 정렬
     cols = sorted([c for c in pivot.columns if c != "합계"]) + ["합계"]
     pivot = pivot.reindex(columns=cols)
 

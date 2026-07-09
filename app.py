@@ -191,30 +191,16 @@ def _is_excluded(filename):
 
 def select_invoices(files):
     """
-    파일 목록에서 인보이스를 선택.
-    우선순위: "최종"/"할인 후" PDF → 키워드 매칭 PDF → 모든 PDF → 키워드 xlsx → 모든 xlsx
+    파일 목록에서 인보이스 후보 반환.
+    '할인 전' 등 제외 키워드만 필터링하고, 모든 유효한 PDF/xlsx를 반환.
+    같은 월+로펌 중복은 이후 파일명 날짜 기준으로 제거됨.
     """
     pdfs = [f for f in files if f["name"].lower().endswith(".pdf") and not _is_excluded(f["name"])]
     xlsxs = [f for f in files if f["name"].lower().endswith(".xlsx") and not _is_excluded(f["name"])]
 
-    # 1순위: "최종" 또는 "할인 후" PDF
-    final = [f for f in pdfs if "최종" in f["name"] or "할인 후" in f["name"]]
-    if final:
-        return final
-
-    # 2순위: 인보이스 키워드 매칭 PDF
-    kw_pdfs = [f for f in pdfs if _has_keyword(f["name"])]
-    if kw_pdfs:
-        return kw_pdfs
-
-    # 3순위: 모든 PDF
+    # PDF가 있으면 PDF, 없으면 xlsx
     if pdfs:
         return pdfs
-
-    # 4순위: xlsx
-    kw_xlsx = [f for f in xlsxs if _has_keyword(f["name"])]
-    if kw_xlsx:
-        return kw_xlsx
     return xlsxs
 
 
@@ -511,16 +497,18 @@ def collect_invoices():
                             "파일명": fname,
                             "링크": inv.get("webViewLink", ""),
                             "파일날짜": extract_file_date(fname),
+                            "우선순위": (1 if ("최종" in fname or "할인 후" in fname) else 0),
                         }
                     )
                 elif amount is None:
                     errors.append(f"[{firm}] 금액 추출 실패: {fname}")
 
-    # 중복 제거: 같은 로펌+같은 월 → 파일명 날짜가 가장 큰 것만 유지
+    # 중복 제거: 같은 로펌+같은 월 → (1) '최종' 우선 (2) 파일명 날짜 최신 우선
     if records:
         df_tmp = pd.DataFrame(records)
-        df_tmp = df_tmp.sort_values("파일날짜", ascending=False)
+        df_tmp = df_tmp.sort_values(["우선순위", "파일날짜"], ascending=[False, False])
         df_tmp = df_tmp.drop_duplicates(subset=["로펌", "기간"], keep="first")
+        df_tmp = df_tmp.drop(columns=["우선순위"])
         records = df_tmp.to_dict("records")
 
     # 표시기간 = 실제 자문 수행 월 (PDF에서 추출된 그대로)

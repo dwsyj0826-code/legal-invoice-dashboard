@@ -1054,6 +1054,13 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
+        /* 사이드바 상단 여백 축소 → 대시보드 제목이 위로 붙음 */
+        section[data-testid="stSidebar"] > div:first-child {
+            padding-top: 0.5rem !important;
+        }
+        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+            padding-top: 0.5rem !important;
+        }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
         span[data-baseweb="tag"] {
             background-color: #5a5a5a !important;
@@ -1329,8 +1336,8 @@ def main():
 
     st.divider()
 
-    # ---- 최근 3개월 요약 (단일 연도 모드에서만) ----
-    if view_mode == "단일 연도":
+    # ---- 최근 3개월 요약 (단일 연도 + 월별 집계에서만) ----
+    if view_mode == "단일 연도" and period_unit == "월별":
         recent_months = sorted(fdf["표시기간"].unique(), reverse=True)[:3]
         firms_sorted = sorted(fdf["로펌"].unique())
 
@@ -1499,44 +1506,52 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- 피벗 테이블 (행·열 최대값 하이라이트) ----
+    # ---- 피벗 테이블 (집계 단위 반영 + 합계 강조) ----
     st.subheader("📊 로펌별 기간 합계")
 
-    pivot = fdf.pivot_table(
+    # 집계 단위에 따른 컬럼 키 생성 (agg의 build_agg_key와 동일 로직)
+    fdf_p = fdf.copy()
+    fdf_p["_col"] = fdf_p.apply(
+        lambda r: build_agg_key(r, period_unit, cross_year=False), axis=1
+    )
+    fdf_p["_sort"] = fdf_p.apply(sort_key, axis=1)
+
+    pivot = fdf_p.pivot_table(
         values="금액",
         index="로펌",
-        columns="표시기간",
+        columns="_col",
         aggfunc="sum",
         fill_value=0,
         margins=True,
         margins_name="합계",
     )
-    cols = sorted([c for c in pivot.columns if c != "합계"]) + ["합계"]
+    # 정렬 순서: sort_key 기준 (연도-월 순)
+    col_order_map = fdf_p.groupby("_col")["_sort"].min().to_dict()
+    # 두 연도 비교 모드에서 연도별 그룹핑 힌트도 반영
+    if view_mode == "두 연도 비교" and period_unit != "연도별":
+        # 연도-집계키 조합으로 정렬 (예: 2025-1월, 2026-1월, 2025-2월, ...)
+        # 여기선 단순히 sort_key 순서 사용
+        pass
+    cols = sorted(
+        [c for c in pivot.columns if c != "합계"],
+        key=lambda c: col_order_map.get(c, 999),
+    ) + ["합계"]
     pivot = pivot.reindex(columns=cols)
 
-    def _highlight_row_col_max(df):
-        """각 로펌(행)별 최고 월 셀 + 각 월(열)별 최고 로펌 셀에 연노란색."""
+    def _highlight_totals(df):
+        """'합계' 행·열에 연회색 배경 + 진한 색 텍스트로 강조."""
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
-        data_cols = [c for c in df.columns if c != "합계"]
-        data_rows = [r for r in df.index if r != "합계"]
-        sub = df.loc[data_rows, data_cols]
-        highlight = "background-color: #FFF9C4"
+        emphasis = "background-color: #E9ECEF; font-weight: 700; color: #1B4F72;"
 
-        for r in data_rows:
-            row = sub.loc[r]
-            if row.max() > 0:
-                max_val = row.max()
-                for c in data_cols:
-                    if row[c] == max_val:
-                        styles.loc[r, c] = highlight
+        # '합계' 행 전체 강조
+        if "합계" in df.index:
+            for c in df.columns:
+                styles.loc["합계", c] = emphasis
 
-        for c in data_cols:
-            col = sub[c]
-            if col.max() > 0:
-                max_val = col.max()
-                for r in data_rows:
-                    if col[r] == max_val:
-                        styles.loc[r, c] = highlight
+        # '합계' 열 전체 강조 (이미 강조된 셀은 덮어써도 동일 스타일)
+        if "합계" in df.columns:
+            for r in df.index:
+                styles.loc[r, "합계"] = emphasis
 
         return styles
 
@@ -1544,7 +1559,7 @@ def main():
         pivot.style
             .format("₩{:,.0f}")
             .map(lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns)
-            .apply(_highlight_row_col_max, axis=None),
+            .apply(_highlight_totals, axis=None),
         use_container_width=True,
     )
 
@@ -1561,7 +1576,6 @@ def main():
         detail_months = st.multiselect(
             "월 필터", all_months, default=all_months, key="detail_month"
         )
-
     tbl = fdf[
         (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))
     ][["로펌", "표시기간", "금액", "파일명", "링크"]].copy()

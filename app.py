@@ -1055,10 +1055,17 @@ def apply_custom_css():
             background: #f8f9fa;
         }
         /* 사이드바 상단 여백 축소 → 대시보드 제목이 위로 붙음 */
-        section[data-testid="stSidebar"] > div:first-child {
-            padding-top: 0.5rem !important;
+        section[data-testid="stSidebar"] > div:first-child,
+        section[data-testid="stSidebar"] > div,
+        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"],
+        section[data-testid="stSidebar"] div[data-testid="stSidebarContent"],
+        div[data-testid="stSidebarNav"] + div,
+        div[data-testid="stSidebarUserContent"] {
+            padding-top: 0.25rem !important;
+            margin-top: 0 !important;
         }
-        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"] {
+        /* Streamlit 상단 헤더 자체 축소 */
+        section[data-testid="stSidebar"] .block-container {
             padding-top: 0.5rem !important;
         }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
@@ -1412,7 +1419,8 @@ def main():
                     font=dict(size=12, color="#1B4F72"),
                 ))
 
-        y_max = float(category_totals.max()) if not category_totals.empty else 0
+        # Y축 상한: 최대 개별 막대 기준 (총합 아님) — 데드스페이스 제거
+        y_max = float(chart_df["금액"].max()) if not chart_df.empty else 0
 
         fig.update_layout(
             barmode="group",
@@ -1467,9 +1475,13 @@ def main():
         year_palette = {2024: "#7BA7D9", 2025: "#E8998D", 2026: "#A3C9A8", 2027: "#B8A0D9"}
 
         fig = go.Figure()
-        for year in sorted(year_chart["표시연도"].unique()):
+        # 라벨 겹침 방지: 연도별로 textposition 다르게 (가장 작은 연도 = top, 그 외 = bottom)
+        years_sorted = sorted(year_chart["표시연도"].unique())
+        for idx, year in enumerate(years_sorted):
             yd = year_chart[year_chart["표시연도"] == year].sort_values("__sort")
             yd = yd.set_index("집계").reindex(periods_sorted).reset_index()
+            # 짝수 번째 = top, 홀수 번째 = bottom (교대)
+            tpos = "top center" if idx % 2 == 0 else "bottom center"
             fig.add_trace(
                 go.Scatter(
                     x=yd["집계"],
@@ -1481,7 +1493,7 @@ def main():
                     text=yd["금액"].apply(
                         lambda v: f"{v/10_000:,.0f}만" if pd.notna(v) and v > 0 else ""
                     ),
-                    textposition="top center",
+                    textposition=tpos,
                     textfont=dict(size=11, color="#333"),
                     hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
                     connectgaps=False,
@@ -1538,20 +1550,43 @@ def main():
     ) + ["합계"]
     pivot = pivot.reindex(columns=cols)
 
-    def _highlight_totals(df):
-        """'합계' 행·열에 연회색 배경 + 진한 색 텍스트로 강조."""
+    # 두 연도 비교 모드일 때 "월/분기/반기 그룹" 경계 감지
+    # 예: 2025-01, 2026-01, 2025-02, 2026-02 → 2026-01 뒤·2026-02 뒤에 굵은 선
+    def _group_key(c):
+        """컬럼명에서 '연도' 부분을 뺀 나머지 (예: '2025-01' → '01', '2025-Q1' → 'Q1')."""
+        if not isinstance(c, str) or c == "합계":
+            return c
+        parts = c.split("-", 1)
+        return parts[1] if len(parts) == 2 else c
+
+    data_cols_ordered = [c for c in pivot.columns if c != "합계"]
+    boundary_cols = set()
+    if view_mode == "두 연도 비교" and len(data_cols_ordered) > 1:
+        for i in range(len(data_cols_ordered) - 1):
+            if _group_key(data_cols_ordered[i]) != _group_key(data_cols_ordered[i + 1]):
+                boundary_cols.add(data_cols_ordered[i])
+
+    def _highlight_and_border(df):
+        """'합계' 행·열 강조 + 두 연도 비교 시 월 그룹 경계에 굵은 세로선."""
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
         emphasis = "background-color: #E9ECEF; font-weight: 700; color: #1B4F72;"
+        boundary = " border-right: 3px solid #495057;"
 
-        # '합계' 행 전체 강조
+        # 합계 행 강조
         if "합계" in df.index:
             for c in df.columns:
                 styles.loc["합계", c] = emphasis
 
-        # '합계' 열 전체 강조 (이미 강조된 셀은 덮어써도 동일 스타일)
+        # 합계 열 강조
         if "합계" in df.columns:
             for r in df.index:
                 styles.loc[r, "합계"] = emphasis
+
+        # 월/분기 그룹 경계 굵은 세로선
+        for c in boundary_cols:
+            if c in df.columns:
+                for r in df.index:
+                    styles.loc[r, c] = styles.loc[r, c] + boundary
 
         return styles
 
@@ -1559,9 +1594,11 @@ def main():
         pivot.style
             .format("₩{:,.0f}")
             .map(lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns)
-            .apply(_highlight_totals, axis=None),
+            .apply(_highlight_and_border, axis=None),
         use_container_width=True,
     )
+    if view_mode == "두 연도 비교" and boundary_cols:
+        st.caption("💡 굵은 세로선이 매 월(또는 분기·반기) 세트 사이 구분입니다.")
 
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")
@@ -1576,6 +1613,7 @@ def main():
         detail_months = st.multiselect(
             "월 필터", all_months, default=all_months, key="detail_month"
         )
+
     tbl = fdf[
         (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))
     ][["로펌", "표시기간", "금액", "파일명", "링크"]].copy()

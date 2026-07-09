@@ -570,6 +570,13 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
+        /* multiselect 태그 색상 (빨강 → 진한 회색) */
+        span[data-baseweb="tag"] {
+            background-color: #5a5a5a !important;
+        }
+        span[data-baseweb="tag"] span {
+            color: white !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -630,7 +637,26 @@ def main():
         sel_year = st.selectbox("연도", years, index=len(years) - 1)
 
         all_firms = sorted(df["로펌"].unique())
-        sel_firms = st.multiselect("로펌", all_firms, default=all_firms)
+
+        # 세션 상태로 로펌 선택 관리
+        if "sel_firms_state" not in st.session_state:
+            st.session_state["sel_firms_state"] = all_firms
+
+        bc1, bc2 = st.columns(2)
+        if bc1.button("전체 선택", use_container_width=True):
+            st.session_state["sel_firms_state"] = all_firms
+            st.rerun()
+        if bc2.button("전체 해제", use_container_width=True):
+            st.session_state["sel_firms_state"] = []
+            st.rerun()
+
+        sel_firms = st.multiselect(
+            "로펌",
+            all_firms,
+            default=st.session_state["sel_firms_state"],
+            key="sel_firms_widget",
+        )
+        st.session_state["sel_firms_state"] = sel_firms
 
         st.divider()
         if st.button("🔄 새로고침", use_container_width=True):
@@ -743,6 +769,16 @@ def main():
         template="plotly_white",
         hoverlabel=dict(font_size=14),
     )
+
+    # 월 사이 세로 점선 구분선 추가
+    for i in range(len(periods_sorted) - 1):
+        fig.add_vline(
+            x=i + 0.5,
+            line_width=1,
+            line_dash="dot",
+            line_color="#bbb",
+        )
+
     st.plotly_chart(fig, use_container_width=True)
 
     # ---- 상세 내역 (필터 포함) ----

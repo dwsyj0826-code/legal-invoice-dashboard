@@ -770,14 +770,22 @@ def main():
         hoverlabel=dict(font_size=14),
     )
 
-    # 월 사이 세로 점선 구분선 추가
+    # 월 사이 세로 점선 구분선 (카테고리 축)
+    shapes = []
     for i in range(len(periods_sorted) - 1):
-        fig.add_vline(
-            x=i + 0.5,
-            line_width=1,
-            line_dash="dot",
-            line_color="#bbb",
+        shapes.append(
+            dict(
+                type="line",
+                xref="x",
+                yref="paper",
+                x0=i + 0.5,
+                x1=i + 0.5,
+                y0=0,
+                y1=1,
+                line=dict(color="#ccc", width=1, dash="dot"),
+            )
         )
+    fig.update_layout(shapes=shapes)
 
     st.plotly_chart(fig, use_container_width=True)
 

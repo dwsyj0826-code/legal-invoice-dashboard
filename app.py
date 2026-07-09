@@ -678,21 +678,35 @@ def _parse_dls_xlsx_2025(buf):
         sheets = [ws for ws in wb.worksheets if sheet_priority(ws) >= 0]
         sheets.sort(key=sheet_priority, reverse=True)
 
-        # 각 시트에서 '총합계' 행의 값들을 수집
-        for ws in sheets:
-            last_total_nums = []
+        # 각 시트에서 '총합계'/'총 금액' 셀 뒤의 값만 추출
+        # (같은 행에 정경태 450000 같은 rate 값이 있어도 무시)
+        def find_totals_in_sheet(ws):
+            last_totals = []
             for row in ws.iter_rows(values_only=True):
                 if not row:
                     continue
-                if any(v and "총합계" in str(v) for v in row):
-                    nums = [float(v) for v in row
-                            if isinstance(v, (int, float)) and v > 100_000]
-                    if nums:
-                        last_total_nums = nums
+                # 이 행에서 "총합계" 또는 "총 금액" 셀 위치 찾기
+                total_positions = [
+                    i for i, v in enumerate(row)
+                    if v and ("총합계" in str(v) or "총 금액" in str(v))
+                ]
+                if not total_positions:
+                    continue
+                # 마지막 "총합계" 셀 오른쪽 값들만 수집
+                last_pos = total_positions[-1]
+                right_vals = [
+                    float(v) for v in row[last_pos + 1:]
+                    if isinstance(v, (int, float)) and v > 100_000
+                ]
+                if right_vals:
+                    last_totals = right_vals  # 마지막 발견된 총합계 행 값
+            return last_totals
 
+        for ws in sheets:
+            last_total_nums = find_totals_in_sheet(ws)
             if last_total_nums:
                 if len(last_total_nums) >= 2:
-                    # 두 값 이상: 청구본(할인적용, 작음) 선택
+                    # 두 값 이상: 청구본(할인 적용, 작은 값) 선택
                     return int(round(min(last_total_nums)))
                 return int(round(last_total_nums[0]))
 
@@ -976,67 +990,85 @@ def _collect_2025_h2(service, parent_folder, records, errors):
         # 로펌별 파일 후보 수집 (월별로 하나만 채택)
         candidates_by_month = {}  # {month: [(priority, file, parser)]}
 
-        for f in files:
-            if f["mimeType"] == "application/vnd.google-apps.folder":
-                continue
-            name = f["name"]
-            lname = name.lower()
-
-            # 로펌별 파일 판별 + 우선순위 부여
-            parser = None
-            priority = 0
-
-            if firm == "SLP":
-                if not (lname.endswith(".pdf") and "_고객양식" in name):
+        # SLP는 서브폴더 구조 ("2025. 7월_법률자문청구") — 각 서브폴더 안에서 통합 PDF 찾기
+        if firm == "SLP":
+            for f in files:
+                if f["mimeType"] != "application/vnd.google-apps.folder":
                     continue
-                parser = _parse_slp_pdf_2025
-                priority = 2 if name.startswith("[SLP]") else 1
-
-            elif firm == "D&A":
-                if not lname.endswith(".pdf"):
+                sub_name = f["name"]
+                # 서브폴더명에서 월 추출: "2025. 7월_법률자문청구" → 7
+                mm = re.search(r"(\d{1,2})\s*월", sub_name)
+                if not mm:
                     continue
-                if any(k in name for k in EXCLUDE_KEYWORDS):
-                    continue
-                parser = _parse_draju_pdf_2025
-                # 청구서 > 자문 순
-                priority = (2 if "청구서" in name else 0) + (1 if "자문" in name else 0)
-
-            elif firm == "DLS":
-                # xlsx만 (PDF는 xlsx의 이미지 버전일 수 있어 스킵)
-                if not lname.endswith(".xlsx"):
-                    continue
-                if any(k in name for k in EXCLUDE_KEYWORDS):
-                    continue
-                parser = _parse_dls_xlsx_2025
-                # 청구본 > 합본 > 그 외, 원본 페널티
-                priority = (
-                    (3 if "청구본" in name else 0)
-                    + (2 if "합본" in name else 0)
-                    - (1 if "원본" in name else 0)
-                )
-            else:
-                continue
-
-            # 자문 수행월 추출: 파일명 → PDF 본문
-            month_info = extract_month(name)
-            if not month_info and lname.endswith(".pdf"):
+                sub_month = int(mm.group(1))
                 try:
-                    buf_probe = download_file(service, f["id"])
-                    with pdfplumber.open(buf_probe) as pdf:
-                        text = "\n".join((p.extract_text() or "") for p in pdf.pages)
-                    month_info = extract_month_from_pdf_text(text)
-                except Exception:
-                    pass
+                    sub_files = list_folder(service, f["id"])
+                except Exception as e:
+                    errors.append(f"[2025 H2 SLP] 서브폴더 조회 실패 ({sub_name}): {e}")
+                    continue
+                slp_pdf = next(
+                    (sf for sf in sub_files
+                     if sf["name"].lower().endswith(".pdf")
+                     and "_고객양식" in sf["name"]),
+                    None,
+                )
+                if slp_pdf:
+                    candidates_by_month.setdefault(sub_month, []).append(
+                        (1, slp_pdf, _parse_slp_pdf_2025)
+                    )
+        else:
+            for f in files:
+                if f["mimeType"] == "application/vnd.google-apps.folder":
+                    continue
+                name = f["name"]
+                lname = name.lower()
 
-            if not month_info:
-                errors.append(f"[2025 H2 {firm}] 월 추출 실패: {name}")
-                continue
+                parser = None
+                priority = 0
 
-            year, month = month_info
-            if year != 2025:
-                continue
+                if firm == "D&A":
+                    if not lname.endswith(".pdf"):
+                        continue
+                    if any(k in name for k in EXCLUDE_KEYWORDS):
+                        continue
+                    parser = _parse_draju_pdf_2025
+                    # 청구서 > 자문 순
+                    priority = (2 if "청구서" in name else 0) + (1 if "자문" in name else 0)
 
-            candidates_by_month.setdefault(month, []).append((priority, f, parser))
+                elif firm == "DLS":
+                    # xlsx만 (PDF는 xlsx의 이미지 버전일 수 있어 스킵)
+                    if not lname.endswith(".xlsx"):
+                        continue
+                    if any(k in name for k in EXCLUDE_KEYWORDS):
+                        continue
+                    parser = _parse_dls_xlsx_2025
+                    # 청구본 > 합본 > 그 외, 원본 페널티
+                    priority = (
+                        (3 if "청구본" in name else 0)
+                        + (2 if "합본" in name else 0)
+                        - (1 if "원본" in name else 0)
+                    )
+                else:
+                    continue
+
+                # 자문 수행월 추출: 파일명 → PDF 본문
+                month_info = extract_month(name)
+                if not month_info and lname.endswith(".pdf"):
+                    try:
+                        buf_probe = download_file(service, f["id"])
+                        with pdfplumber.open(buf_probe) as pdf:
+                            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
+                        month_info = extract_month_from_pdf_text(text)
+                    except Exception:
+                        pass
+
+                if not month_info:
+                    errors.append(f"[2025 H2 {firm}] 월 추출 실패: {name}")
+                    continue
+
+                # H2 폴더 안이므로 연도는 무조건 2025로 강제 (파일명에서 2026 등이 나와도 무시)
+                _, month = month_info
+                candidates_by_month.setdefault(month, []).append((priority, f, parser))
 
         # 월별로 최고 우선순위 파일 하나만 파싱
         for month, cands in candidates_by_month.items():
@@ -1552,8 +1584,7 @@ def main():
                     font=dict(size=12, color="#1B4F72"),
                 ))
 
-        # Y축 상한: 최대 개별 막대 기준 (총합 아님) — 데드스페이스 제거
-        y_max = float(chart_df["금액"].max()) if not chart_df.empty else 0
+        y_max = float(category_totals.max()) if not category_totals.empty else 0
 
         fig.update_layout(
             barmode="group",
@@ -1568,8 +1599,7 @@ def main():
                 title="금액 (원)",
                 tickformat=",",
                 tickfont=dict(size=13),
-                # 배지 공간 확보: 최대 막대의 1.15배
-                range=[0, y_max * 1.15] if y_max > 0 else None,
+                range=[0, y_max * 1.18] if y_max > 0 else None,
             ),
             legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
             height=520,
@@ -1648,7 +1678,7 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # ---- 피벗 테이블 ----
+    # ---- 피벗 테이블 (행·열 최대값 하이라이트) ----
     st.subheader("📊 로펌별 기간 합계")
 
     pivot = fdf.pivot_table(
@@ -1663,10 +1693,37 @@ def main():
     cols = sorted([c for c in pivot.columns if c != "합계"]) + ["합계"]
     pivot = pivot.reindex(columns=cols)
 
+    def _highlight_row_col_max(df):
+        """각 로펌(행)별 최고 월 셀 + 각 월(열)별 최고 로펌 셀에 연노란색."""
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        # '합계' 행·열은 제외
+        data_rows = [r for r in df.index if r != "합계"]
+        sub = df.loc[data_rows, data_cols]
+        highlight = "background-color: #FFF9C4"
+
+        for r in data_rows:
+            row = sub.loc[r]
+            if row.max() > 0:
+                max_val = row.max()
+                for c in data_cols:
+                    if row[c] == max_val:
+                        styles.loc[r, c] = highlight
+
+        for c in data_cols:
+            col = sub[c]
+            if col.max() > 0:
+                max_val = col.max()
+                for r in data_rows:
+                    if col[r] == max_val:
+                        styles.loc[r, c] = highlight
+
+        return styles
+
     st.dataframe(
-        pivot.style.format("₩{:,.0f}").map(
-            lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns
-        ),
+        pivot.style
+            .format("₩{:,.0f}")
+            .map(lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns)
+            .apply(_highlight_row_col_max, axis=None),
         use_container_width=True,
     )
 

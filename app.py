@@ -761,7 +761,7 @@ def main():
 
     fig.update_layout(
         barmode="group",
-        xaxis=dict(title="비용발생월", categoryorder="array", categoryarray=periods_sorted, tickfont=dict(size=13)),
+        xaxis=dict(title="비용발생월", type="category", categoryorder="array", categoryarray=periods_sorted, tickfont=dict(size=13)),
         yaxis=dict(title="금액 (원)", tickformat=",", tickfont=dict(size=13)),
         legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
         height=480,

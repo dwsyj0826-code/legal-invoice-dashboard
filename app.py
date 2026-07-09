@@ -1214,14 +1214,31 @@ def main():
         )
         st.header("📊 조회 설정")
 
-        # ═════════ [1] 데이터 필터 (전체 대시보드에 적용) ═════════
+        # ═════════ [1] 표시 방식 (차트·KPI 표현) ═════════
+        st.markdown("#### 🎨 표시 방식")
+
+        view_mode = st.radio(
+            "조회 모드",
+            ["단일 연도", "두 연도 비교"],
+            help="단일 연도: 로펌별 막대그래프. 두 연도 비교: 연도별 라인 겹쳐 표시.",
+            key="view_mode_widget",
+        )
+
+        period_unit = st.radio(
+            "집계 단위",
+            ["월별", "분기별", "반기별", "연도별"],
+            help="차트 X축·KPI(평균/최고 지출) 기준. 데이터를 어떤 단위로 묶어 볼지 결정.",
+        )
+
+        if view_mode == "두 연도 비교" and period_unit == "연도별":
+            st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이라 라인 형태가 안 나옴.")
+
+        st.divider()
+
+        # ═════════ [2] 데이터 필터 (전체 대시보드에 적용) ═════════
         st.markdown("#### 🔍 데이터 필터")
-        st.caption("👉 아래 필터는 **KPI · 차트 · 표 전체**에 적용됩니다.")
 
         years = sorted(df["표시연도"].unique())
-
-        # 연도 필터: 조회 모드에 따라 UI 달라짐 (아래 조회 모드 값을 미리 세션에서)
-        view_mode = st.session_state.get("view_mode_state", "단일 연도")
 
         if view_mode == "단일 연도":
             sel_year = st.selectbox("연도", years, index=len(years) - 1, key="sel_year_widget")
@@ -1262,29 +1279,6 @@ def main():
             key="sel_firms_widget",
         )
         st.session_state["sel_firms_state"] = sel_firms
-
-        st.divider()
-
-        # ═════════ [2] 표시 방식 (차트·KPI 표현) ═════════
-        st.markdown("#### 🎨 표시 방식")
-        st.caption("👉 아래 옵션은 **차트 형태·KPI 계산 단위**를 바꿉니다. 데이터 범위는 그대로.")
-
-        view_mode = st.radio(
-            "조회 모드",
-            ["단일 연도", "두 연도 비교"],
-            help="단일 연도: 로펌별 막대그래프. 두 연도 비교: 연도별 라인 겹쳐 표시.",
-            key="view_mode_widget",
-        )
-        st.session_state["view_mode_state"] = view_mode
-
-        period_unit = st.radio(
-            "집계 단위",
-            ["월별", "분기별", "반기별", "연도별"],
-            help="차트 X축·KPI(평균/최고 지출) 기준. 데이터를 어떤 단위로 묶어 볼지 결정.",
-        )
-
-        if view_mode == "두 연도 비교" and period_unit == "연도별":
-            st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이라 라인 형태가 안 나옴.")
 
         st.divider()
 

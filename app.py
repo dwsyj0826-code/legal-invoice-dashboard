@@ -34,23 +34,23 @@ st.set_page_config(
 # 루트 폴더 ID (Streamlit secrets에서 가져오거나 기본값 사용)
 ROOT_FOLDER_ID = st.secrets.get("ROOT_FOLDER_ID", "1HleAj4z6DH9KxMjyuf56lRD4b-c7pOyh")
 
-# 로펌별 차트 색상
+# 로펌별 차트 색상 (파스텔 톤, 통일감 있게)
 FIRM_COLORS = {
-    "광장": "#1B4F72",
-    "김앤장": "#922B21",
-    "지평": "#196F3D",
-    "D&A": "#7D3C98",
-    "율촌": "#B9770E",
-    "율촌(영문)": "#D4AC0D",
-    "SLP": "#2E86C1",
-    "DLS": "#D35400",
-    "세종": "#16A085",
-    "세종_인도네시아": "#148F77",
+    "광장": "#7BA7D9",       # 파스텔 블루
+    "김앤장": "#E8998D",     # 파스텔 코랄
+    "지평": "#A3C9A8",       # 파스텔 그린
+    "D&A": "#B8A0D9",        # 파스텔 퍼플
+    "율촌": "#F0C987",       # 파스텔 오렌지
+    "율촌(영문)": "#E8D687",  # 파스텔 옐로우
+    "SLP": "#9EC5D9",        # 파스텔 스카이
+    "DLS": "#D9A87B",        # 파스텔 캐러멜
+    "세종": "#A0D4C8",       # 파스텔 민트
+    "세종_인도네시아": "#8FC7B9",  # 파스텔 틸
 }
 
 # 인보이스 파일 판별 키워드
 INVOICE_KEYWORDS = ["자문료", "인보이스", "invoice", "청구", "보수금"]
-EXCLUDE_KEYWORDS = ["할인 전", "할인전"]
+EXCLUDE_KEYWORDS = ["할인 전", "할인전", "이체확인증", "납부확인서", "실비"]
 
 # 폴더명 → 표시명 매핑
 FIRM_DISPLAY_NAMES = {
@@ -284,18 +284,23 @@ def parse_pdf_amount(text, firm):
             return _clean(m.group(1))
 
     elif firm == "D&A":
-        # "공급가 34,269,600" 또는 "자문료 합계 (20% 할인 후) 34,269,600"
+        # D&A 표준 양식: "공급가 W 18,880,000" (VAT 제외 정상가)
+        # 여러 통화 기호 대응: W, ₩, ￦, \, ¥ 등
+        m = re.search(r"공급가\s*[Ww₩￦\\￥]?\s*([\d,]{7,})", t)
+        if m:
+            return _clean(m.group(1))
+        # 할인 있는 경우: "자문료 합계 (20% 할인 후) 34,269,600"
         m = re.search(r"자문료\s*합계\s*\(\s*\d+\s*%\s*할인\s*후\s*\)\s*([\d,]+)", t)
         if m:
             return _clean(m.group(1))
-        m = re.search(r"공급가\s*[￦₩W]?\s*([\d,]+)", t)
+        # "자문료 합계" 단독
+        m = re.search(r"자문료\s*합계\s*[:：]?\s*([\d,]{7,})", t)
         if m:
             return _clean(m.group(1))
-        # "총 법률자문료(4+5) 37,696,560" 은 VAT 포함이라 제외
-        # "자문료 합계 (20% 할인 후)" 없으면 "자문료 합계 (할인 전)" 이라도 사용
-        m = re.search(r"자문료\s*합계\s*\(\s*할인\s*전\s*\)\s*([\d,]+)", t)
+        # "총 법률자문료(3+4) 20,768,000" 은 VAT 포함이라 마지막 순위
+        m = re.search(r"총\s*법률자문료\s*\([^)]+\)\s*([\d,]+)", t)
         if m:
-            return _clean(m.group(1))
+            return int(round(_clean(m.group(1)) / 1.1))
 
     elif firm.startswith("율촌"):
         # "1. 보수금 : 27,243,750원" (첫 번째 보수금, 보수금합계가 아닌 것)
@@ -321,7 +326,19 @@ def parse_pdf_amount(text, firm):
                 pass
 
     elif firm == "세종_인도네시아" or firm == "세종":
-        # "총 법률자문료" 또는 "청구 금액" 등
+        # 세종은 띄어쓰기가 있고 원화기호가 \(백슬래시)로 표시됨
+        # 라인 아이템: "법률고문료 \ 5,000,000" (VAT 제외)
+        # 상단 문구: "...법률고문료 ₩ 5,500,000 (10% 부가가치세 포함)..." (VAT 포함, 제외 필요)
+        t_ns = t.replace(" ", "")
+        # 백슬래시 \ 뒤에 오는 법률고문료 금액 우선 (라인 아이템)
+        m = re.search(r"법률고문료\\([\d,]+)", t_ns)
+        if m:
+            return _clean(m.group(1))
+        # 백슬래시가 없으면 부가가치세 포함액에서 VAT 제거
+        m = re.search(r"법률고문료\s*[₩￦W]?\s*([\d,]+)\s*\(10%\s*부가가치세\s*포함\)", t_ns)
+        if m:
+            return int(round(_clean(m.group(1)) / 1.1))
+        # 기존 원 단위 패턴 (예비)
         m = re.search(r"청구\s*금액\s*[:：]?\s*([\d,]+)\s*원", t)
         if m:
             return _clean(m.group(1))
@@ -681,8 +698,8 @@ def main():
                             c2.metric("PDF 텍스트 월", str(pdf_month) if pdf_month else "실패")
                             c3.metric("추출 금액", f"₩{amount:,.0f}" if amount else "실패")
 
-                            st.caption("**pdfplumber 텍스트 (처음 2000자):**")
-                            st.code(text[:2000] if text else "(빈 텍스트)", language="text")
+                            st.caption("**pdfplumber 텍스트 (처음 5000자):**")
+                            st.code(text[:5000] if text else "(빈 텍스트)", language="text")
                         except Exception as e:
                             st.error(f"파싱 실패: {e}")
 

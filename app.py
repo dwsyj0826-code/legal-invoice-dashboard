@@ -45,6 +45,120 @@ FIRMS_2025 = {"SLP", "DLS", "D&A"}
 # ★ 스냅샷 파일 경로 (GitHub 저장소 최상단에 두는 정적 데이터)
 SNAPSHOT_PATH = Path(__file__).parent / "data_snapshot.json"
 
+# ============================================================
+# ★ 2025년 수동 입력 데이터 (VAT 제외 금액)
+# ============================================================
+# 2025년은 폴더 구조가 불규칙하고 파일 파싱 실패가 잦아 자동 파싱을 포기하고
+# 수동 관리. 아래 dict의 숫자만 수정하면 대시보드에 즉시 반영됨.
+# 금액 0 = 해당 월에 청구 없음 (표시 X).
+# ============================================================
+MANUAL_2025 = {
+    "DLS": {
+        1: 11_545_000,  2: 27_000_000,  3: 11_876_000,  4: 8_149_000,
+        5:  3_885_000,  6:          0,  7:  3_208_000,  8:         0,
+        9:  6_414_000, 10:  4_045_000, 11:  6_103_000, 12: 7_475_000,
+    },
+    "D&A": {
+        1: 14_734_200,  2: 13_612_000,  3:  9_840_000,  4: 6_938_000,
+        5:  5_000_000,  6:  5_000_000,  7:  5_000_000,  8: 5_000_000,
+        9:  5_000_000, 10:  5_000_000, 11: 13_857_000, 12: 17_253_000,
+    },
+    "SLP": {
+        1: 11_900_000,  2: 24_352_500,  3: 14_960_000,  4: 10_965_000,
+        5:  4_122_500,  6: 13_387_500,  7:  6_205_000,  8:  4_037_500,
+        9: 10_497_500, 10:  9_265_000, 11: 24_352_500, 12:  7_607_500,
+    },
+}
+
+# 2025년 인보이스 링크 (Drive 파일 ID 매핑)
+_DRIVE_VIEW = "https://drive.google.com/file/d/{}/view"
+MANUAL_2025_LINKS = {
+    "SLP": {
+        1: _DRIVE_VIEW.format("1XgvZJYICrbep_ai6_uzw2hz9br-zBFjy"),
+        2: _DRIVE_VIEW.format("1BuHbosIQSPUjcP9y9yDrGt4BVGecs-1o"),
+        3: _DRIVE_VIEW.format("1x3tO9XFKb8dWsu090FYICbMAy_KKhVrE"),
+        4: _DRIVE_VIEW.format("11ZorYxJBDlgOLpud2rT5QiKJLMrqUoA5"),
+        5: _DRIVE_VIEW.format("1JE2vy90gxkE7EonIinDoJ0vNvuEh7lUA"),
+        6: _DRIVE_VIEW.format("1AVDEC2txMz-lLRhvj42MuiUIHlo8j1Va"),
+        7: _DRIVE_VIEW.format("1btB44kWkSuhGuBEkzrAAJkMr1I4oK4Ly"),
+        8: _DRIVE_VIEW.format("1-Ec6ys_35gI5xK6KsRJVPk2JDElTOLjv"),
+        9: _DRIVE_VIEW.format("1aNZ7h-Lz7VvpG6vrupzuLdW7uX8n7J5M"),
+       10: _DRIVE_VIEW.format("1-nGKMV5lgEIWCeyh_DyKqsQUBhpgPqjw"),
+       11: _DRIVE_VIEW.format("1T50PwmDiEZsgtD0gvN9Pi3DuhapFlwbZ"),
+       12: _DRIVE_VIEW.format("1Uu37_coEQm6SxbzjzUFlfE0jCxbZ4aVC"),
+    },
+    "DLS": {
+        1: _DRIVE_VIEW.format("1hqvTcIwuPNwKzryQEE4OWltRRrOZz_YS"),
+        2: _DRIVE_VIEW.format("1jRroTg2A5mm_k1CSoTbT9JS_UJZbGXEe"),
+        3: _DRIVE_VIEW.format("1BMTSywETWrflKNlmX2HLuq04-59zJa8p"),
+        4: _DRIVE_VIEW.format("1GiXAF9KiBJavSEwOcBi69jIlejsIbMds"),
+        # 5: DLS 5월분 링크 보류
+        # 6, 8: DLS 청구 없음
+        7: _DRIVE_VIEW.format("1DHihoOUe-1tZvfCaSvvgz3ZQnNZfQlQn"),
+        9: _DRIVE_VIEW.format("1i1zIOBzmEBjF_cKWNACILy6yv5L9wKDU"),
+       10: _DRIVE_VIEW.format("1YexQ6TTV6ZtbbR9PIWr9qaPtmiVcYXe_"),
+       11: _DRIVE_VIEW.format("1uMKWo2853Up51qmX6fxpesJy9ZfSmQtJ"),
+       12: _DRIVE_VIEW.format("16vtpoQvMOUnvnNOutcSXKEAgCn1Ix0Xm"),
+    },
+    "D&A": {
+        1: _DRIVE_VIEW.format("1Y7YkOUVLxPf0V4qsUqZaOYf9SrFYuj4B"),
+        2: _DRIVE_VIEW.format("1BknK5jttIfnSXfYeqsreQEh5SDUFs2NC"),
+        3: _DRIVE_VIEW.format("1NPKPGfkAynFV7FOY2zp9dJXKaC8aR6Ji"),
+        4: _DRIVE_VIEW.format("1cFWvRJgHmYQh4MQJM4VXxw3OZu2I6q7G"),
+        5: _DRIVE_VIEW.format("1dm2BNuqoTCbxupkOmyrNeCEi03Yvu3JH"),
+        6: _DRIVE_VIEW.format("1mztuMH_WZc-1KcfeqGFrPHk-NQ3rZWe9"),
+        7: _DRIVE_VIEW.format("1nb9hj1FrAs99rXfpn5rusujgKZQlqnVF"),
+        8: _DRIVE_VIEW.format("1iOrsG5_dURBS42D6WjBM1fhQgzLM3JEm"),
+        9: _DRIVE_VIEW.format("1to_OChLoCtmmzSwgxUkIjOjehq9GKWi_"),
+       10: _DRIVE_VIEW.format("18ewlRGslAHLGj3pKDPlSH6YN6lgSy3M3"),
+       11: _DRIVE_VIEW.format("19ybE_b0QAQx2Z5RQI7JrmsOo9wfRyu8j"),
+       12: _DRIVE_VIEW.format("12WqqLZTIlAc_Xuez7KcQ6SPenyZb90Dp"),
+    },
+}
+
+# 2025년 인보이스 파일명 매핑 (상세 내역 표시용)
+MANUAL_2025_FILENAMES = {
+    "SLP": {
+        1: "[SLP]2501_법무검토인보이스_고객양식.pdf",
+        2: "2502_법무검토인보이스_고객양식.pdf",
+        3: "2503_법무검토인보이스_SLP.pdf",
+        4: "2504_법무검토인보이스_고객양식.pdf",
+        5: "2505_법무검토인보이스_고객양식.pdf",
+        6: "250715_법률자문료 INVOICE_6월분_대웅제약.pdf",
+        7: "250818_법률자문료 INVOICE_7월분_대웅제약.pdf",
+        8: "250916_법률자문료 INVOICE_8월분_대웅제약.pdf",
+        9: "2509_법무검토인보이스_고객양식.pdf",
+       10: "251119_법률자문료 INVOICE_10월분_대웅제약.pdf",
+       11: "251217_법률자문료 INVOICE_11월분_대웅제약.pdf",
+       12: "260116_법률자문료 INVOICE_12월분_대웅&대웅제약.pdf",
+    },
+    "DLS": {
+        1: "[DLS]대웅제약 업무수행내역(2501)_합본_v2_20250220.xlsx",
+        2: "대웅제약 업무수행내역(2502)(청구본)_DLS.xlsx",
+        3: "대웅제약 업무수행내역(2503)_청구본_v2_DLS_20250423.xlsx",
+        4: "대웅제약 업무수행내역(2504)_청구본_DLS _20250520.xlsx",
+        7: "대웅제약 업무수행내역(2507)_DLS_청구_20250820.xlsx",
+        9: "대웅제약 업무수행내역(2509)_DLS_청구본_20251023.xlsx",
+       10: "대웅제약 업무수행내역(2510)_DLS_청구본.xlsx",
+       11: "대웅제약 업무수행내역(2511)_DLS_청구본_20251229.xlsx",
+       12: "대웅제약 업무수행내역(2512)청구본_DLS_SHL_20260202.xlsx",
+    },
+    "D&A": {
+        1: "[대륙아주]250217_23-73009_자문_대웅제약.pdf",
+        2: "250318_23-73009_자문_대웅제약.pdf",
+        3: "250416_자문료 청구서_대륙아주.pdf",
+        4: "250516_23-73009_자문_대웅제약_대륙아주.pdf",
+        5: "250619 5월 자문료 청구서_대륙아주.pdf",
+        6: "250715 6월 자문료 청구서(대웅제약).pdf",
+        7: "250818 7월 자문료 청구서(대웅제약).pdf",
+        8: "250911 8월 자문료 청구서(대웅제약).pdf",
+        9: "251016 9월 자문료 청구서(대웅제약).pdf",
+       10: "251118 10월 자문료 청구서(대웅제약).pdf",
+       11: "251211 11월 자문료 청구서(대웅제약).pdf",
+       12: "260120 12월 자문료 청구서(대웅제약).pdf",
+    },
+}
+
 # 로펌별 차트 색상 (파스텔 톤, 통일감 있게)
 FIRM_COLORS = {
     "광장": "#7BA7D9",       # 파스텔 블루
@@ -779,323 +893,30 @@ def _extract_month_from_2025_folder(folder_name):
 @st.cache_data(ttl=86400, show_spinner=False)
 def collect_invoices_2025():
     """
-    2025 폴더 스캔 → SLP·DLS·D&A 3개 로펌만 파싱.
-    - 월별 폴더 (25.2 ~ 25.6): 25년 1~5월 자문분
-    - '2025 7월~ 12월' 폴더: 로펌별 서브폴더 (율촌 제외)
-    반환: (records, errors)
+    2025년 데이터: 수동 입력 (자동 파싱 X).
+    MANUAL_2025 dict의 값을 records 형식으로 변환하여 반환.
+    금액이 0이거나 None이면 스킵 (해당 월 청구 없음).
     """
-    service = get_drive_service()
     records = []
-    errors = []
-
-    try:
-        top_items = list_folder(service, FOLDER_ID_2025)
-    except Exception as e:
-        errors.append(f"[2025] 폴더 접근 실패: {e}")
-        return records, errors
-
-    for folder in top_items:
-        if folder["mimeType"] != "application/vnd.google-apps.folder":
-            continue
-
-        fname = folder["name"]
-
-        # 25.1 폴더 (24년 12월분) 제외
-        if "24년" in fname:
-            continue
-
-        # 2025 7~12월 폴더는 별도 함수로 처리
-        if "2025 7월" in fname or "7월~" in fname:
-            _collect_2025_h2(service, folder, records, errors)
-            continue
-
-        # 월별 폴더 처리
-        month_info = _extract_month_from_2025_folder(fname)
-        if not month_info:
-            errors.append(f"[2025] 월 추출 실패: {fname}")
-            continue
-        adv_year, adv_month = month_info
-
-        try:
-            contents = list_folder(service, folder["id"])
-        except Exception as e:
-            errors.append(f"[2025] 폴더 조회 실패 ({fname}): {e}")
-            continue
-
-        # 파일명 기반 로펌 식별 (대괄호 접두어 불필요)
-        # DLS 후보: 파일명에 "DLS" 포함된 xlsx (청구본 우선)
-        # D&A 후보: 파일명에 "대륙아주" 포함된 PDF
-        # SLP 후보: [SLP]* 서브폴더 안의 "_고객양식" 붙은 PDF (접두어 무관)
-        dls_candidates = []
-        da_candidates = []
-        slp_from_subfolders = []
-
-        for item in contents:
-            name = item["name"]
-            is_folder = item["mimeType"] == "application/vnd.google-apps.folder"
-
-            if is_folder and "SLP" in name:
-                # SLP 서브폴더 탐색
-                try:
-                    sub_files = list_folder(service, item["id"])
-                except Exception as e:
-                    errors.append(f"[2025 SLP] 서브폴더 조회 실패 ({name}): {e}")
-                    continue
-                # _고객양식 붙은 PDF (통합 인보이스). [SLP] 접두어 요구하지 않음
-                slp_pdf = next(
-                    (f for f in sub_files
-                     if f["name"].lower().endswith(".pdf")
-                     and "_고객양식" in f["name"]),
-                    None,
-                )
-                if slp_pdf:
-                    slp_from_subfolders.append(slp_pdf)
-            elif not is_folder:
-                lname = name.lower()
-                # 제외 키워드 필터 (SLP 개별 인보이스, zip, 실비 등)
-                if any(k in name for k in EXCLUDE_KEYWORDS):
-                    continue
-                # DLS xlsx: 파일명에 "DLS" 있고 xlsx이며 "대륙아주"는 없어야 (배포양식 아님)
-                if (lname.endswith(".xlsx")
-                        and "dls" in lname
-                        and "대륙아주" not in name):
-                    dls_candidates.append(item)
-                # D&A PDF: top-level의 모든 PDF (SLP은 서브폴더 안에 있으므로)
-                # 단, 계열사 개별 인보이스(INVOICE_*_대웅제약.pdf 등)나 SLP 통합본은 제외
-                elif lname.endswith(".pdf"):
-                    # SLP 스타일 통합본은 top-level에 없어야 하지만 방어 차원
-                    if "_고객양식" in name or "INVOICE" in name:
-                        continue
-                    da_candidates.append(item)
-
-        # ── SLP 처리 ──
-        for slp_pdf in slp_from_subfolders:
-            try:
-                buf = download_file(service, slp_pdf["id"])
-                amount = _parse_slp_pdf_2025(buf)
-            except Exception as e:
-                errors.append(f"[2025 SLP] 파싱 오류 ({slp_pdf['name']}): {e}")
-                amount = None
-            if amount:
-                records.append({
-                    "로펌": "SLP",
-                    "연도": adv_year, "월": adv_month,
-                    "기간": f"{adv_year}-{adv_month:02d}",
-                    "금액": amount,
-                    "파일명": slp_pdf["name"],
-                    "링크": slp_pdf.get("webViewLink", ""),
-                })
-            else:
-                errors.append(f"[2025 SLP] 금액 추출 실패: {slp_pdf['name']}")
-
-        # ── D&A(대륙아주) 처리 ──
-        # 여러 후보 있을 시: "청구서" > "자문" 우선
-        if da_candidates:
-            def da_priority(f):
-                n = f["name"]
-                return (
-                    1 if "청구서" in n else 0,
-                    1 if "자문" in n else 0,
-                    0 if any(k in n for k in EXCLUDE_KEYWORDS) else 1,
-                )
-            da_candidates.sort(key=da_priority, reverse=True)
-            best = da_candidates[0]
-            try:
-                buf = download_file(service, best["id"])
-                amount = _parse_draju_pdf_2025(buf)
-            except Exception as e:
-                errors.append(f"[2025 D&A] 파싱 오류 ({best['name']}): {e}")
-                amount = None
-            if amount:
-                records.append({
-                    "로펌": "D&A",
-                    "연도": adv_year, "월": adv_month,
-                    "기간": f"{adv_year}-{adv_month:02d}",
-                    "금액": amount,
-                    "파일명": best["name"],
-                    "링크": best.get("webViewLink", ""),
-                })
-            else:
-                errors.append(f"[2025 D&A] 금액 추출 실패: {best['name']}")
-
-        # ── DLS 처리 ──
-        # 여러 후보 시: "청구본" > "합본" > 그 외
-        if dls_candidates:
-            def dls_priority(f):
-                n = f["name"]
-                return (
-                    2 if "청구본" in n else (1 if "합본" in n else 0),
-                    0 if "원본" in n else 1,
-                )
-            dls_candidates.sort(key=dls_priority, reverse=True)
-            best = dls_candidates[0]
-            try:
-                buf = download_file(service, best["id"])
-                amount = _parse_dls_xlsx_2025(buf)
-            except Exception as e:
-                errors.append(f"[2025 DLS] 파싱 오류 ({best['name']}): {e}")
-                amount = None
-            if amount:
-                records.append({
-                    "로펌": "DLS",
-                    "연도": adv_year, "월": adv_month,
-                    "기간": f"{adv_year}-{adv_month:02d}",
-                    "금액": amount,
-                    "파일명": best["name"],
-                    "링크": best.get("webViewLink", ""),
-                })
-            else:
-                errors.append(f"[2025 DLS] 금액 추출 실패: {best['name']}")
-
-    # 표시기간 필드 추가 (2026과 일관성)
-    for r in records:
-        r["표시기간"] = r["기간"]
-        r["표시연도"] = r["연도"]
-        r["표시월"] = r["월"]
-
-    return records, errors
-
-
-def _collect_2025_h2(service, parent_folder, records, errors):
-    """
-    '2025 7월~ 12월' 폴더: 로펌별 서브폴더 (율촌 제외).
-    각 서브폴더에서 SLP·DLS·D&A 인보이스를 월별로 파싱.
-    자문 수행월은 PDF 본문 또는 파일명에서 추출.
-    """
-    try:
-        firm_folders = list_folder(service, parent_folder["id"])
-    except Exception as e:
-        errors.append(f"[2025 H2] 폴더 조회 실패: {e}")
-        return
-
-    for firm_folder in firm_folders:
-        if firm_folder["mimeType"] != "application/vnd.google-apps.folder":
-            continue
-        firm_raw = firm_folder["name"]
-
-        # 율촌 제외 (정기자문비 아님)
-        if firm_raw == "율촌":
-            continue
-
-        firm = FIRM_DISPLAY_NAMES.get(firm_raw, firm_raw)
-        if firm not in FIRMS_2025:
-            continue  # SLP·DLS·D&A만
-
-        try:
-            files = list_folder(service, firm_folder["id"])
-        except Exception as e:
-            errors.append(f"[2025 H2 {firm}] 폴더 조회 실패: {e}")
-            continue
-
-        # 로펌별 파일 후보 수집 (월별로 하나만 채택)
-        candidates_by_month = {}  # {month: [(priority, file, parser)]}
-
-        # SLP는 서브폴더 구조 ("2025. 7월_법률자문청구") — 각 서브폴더 안에서 통합 PDF 찾기
-        if firm == "SLP":
-            for f in files:
-                if f["mimeType"] != "application/vnd.google-apps.folder":
-                    continue
-                sub_name = f["name"]
-                # 서브폴더명에서 월 추출: "2025. 7월_법률자문청구" → 7
-                mm = re.search(r"(\d{1,2})\s*월", sub_name)
-                if not mm:
-                    continue
-                sub_month = int(mm.group(1))
-                try:
-                    sub_files = list_folder(service, f["id"])
-                except Exception as e:
-                    errors.append(f"[2025 H2 SLP] 서브폴더 조회 실패 ({sub_name}): {e}")
-                    continue
-                slp_pdf = next(
-                    (sf for sf in sub_files
-                     if sf["name"].lower().endswith(".pdf")
-                     and "_고객양식" in sf["name"]),
-                    None,
-                )
-                if slp_pdf:
-                    candidates_by_month.setdefault(sub_month, []).append(
-                        (1, slp_pdf, _parse_slp_pdf_2025)
-                    )
-        else:
-            for f in files:
-                if f["mimeType"] == "application/vnd.google-apps.folder":
-                    continue
-                name = f["name"]
-                lname = name.lower()
-
-                parser = None
-                priority = 0
-
-                if firm == "D&A":
-                    if not lname.endswith(".pdf"):
-                        continue
-                    if any(k in name for k in EXCLUDE_KEYWORDS):
-                        continue
-                    parser = _parse_draju_pdf_2025
-                    # 청구서 > 자문 순
-                    priority = (2 if "청구서" in name else 0) + (1 if "자문" in name else 0)
-
-                elif firm == "DLS":
-                    # xlsx만 (PDF는 xlsx의 이미지 버전일 수 있어 스킵)
-                    if not lname.endswith(".xlsx"):
-                        continue
-                    if any(k in name for k in EXCLUDE_KEYWORDS):
-                        continue
-                    parser = _parse_dls_xlsx_2025
-                    # 청구본 > 합본 > 그 외, 원본 페널티
-                    priority = (
-                        (3 if "청구본" in name else 0)
-                        + (2 if "합본" in name else 0)
-                        - (1 if "원본" in name else 0)
-                    )
-                else:
-                    continue
-
-                # 자문 수행월 추출: 파일명 → PDF 본문
-                month_info = extract_month(name)
-                if not month_info and lname.endswith(".pdf"):
-                    try:
-                        buf_probe = download_file(service, f["id"])
-                        with pdfplumber.open(buf_probe) as pdf:
-                            text = "\n".join((p.extract_text() or "") for p in pdf.pages)
-                        month_info = extract_month_from_pdf_text(text)
-                    except Exception:
-                        pass
-
-                if not month_info:
-                    errors.append(f"[2025 H2 {firm}] 월 추출 실패: {name}")
-                    continue
-
-                # H2 폴더 안이므로 연도는 무조건 2025로 강제 (파일명에서 2026 등이 나와도 무시)
-                _, month = month_info
-                candidates_by_month.setdefault(month, []).append((priority, f, parser))
-
-        # 월별로 최고 우선순위 파일 하나만 파싱
-        for month, cands in candidates_by_month.items():
-            cands.sort(key=lambda x: x[0], reverse=True)
-            _, best_file, parser = cands[0]
-            name = best_file["name"]
-
-            try:
-                buf = download_file(service, best_file["id"])
-                amount = parser(buf)
-            except Exception as e:
-                errors.append(f"[2025 H2 {firm}] 파싱 오류 ({name}): {e}")
-                amount = None
-
-            if amount:
-                records.append({
-                    "로펌": firm,
-                    "연도": 2025, "월": month,
-                    "기간": f"2025-{month:02d}",
-                    "표시기간": f"2025-{month:02d}",
-                    "표시연도": 2025, "표시월": month,
-                    "금액": amount,
-                    "파일명": name,
-                    "링크": best_file.get("webViewLink", ""),
-                })
-            else:
-                errors.append(f"[2025 H2 {firm}] 금액 추출 실패: {name}")
+    for firm, months in MANUAL_2025.items():
+        for month, amount in months.items():
+            if not amount or amount <= 0:
+                continue
+            link = MANUAL_2025_LINKS.get(firm, {}).get(month, "")
+            fname = MANUAL_2025_FILENAMES.get(firm, {}).get(
+                month, f"2025-{month:02d} {firm} 정기자문료"
+            )
+            records.append({
+                "로펌": firm,
+                "연도": 2025, "월": month,
+                "기간": f"2025-{month:02d}",
+                "표시기간": f"2025-{month:02d}",
+                "표시연도": 2025, "표시월": month,
+                "금액": amount,
+                "파일명": fname,
+                "링크": link,
+            })
+    return records, []
 
 
 # ============================================================
@@ -1696,7 +1517,7 @@ def main():
     def _highlight_row_col_max(df):
         """각 로펌(행)별 최고 월 셀 + 각 월(열)별 최고 로펌 셀에 연노란색."""
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
-        # '합계' 행·열은 제외
+        data_cols = [c for c in df.columns if c != "합계"]
         data_rows = [r for r in df.index if r != "합계"]
         sub = df.loc[data_rows, data_cols]
         highlight = "background-color: #FFF9C4"
@@ -1726,7 +1547,6 @@ def main():
             .apply(_highlight_row_col_max, axis=None),
         use_container_width=True,
     )
-
 
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")
@@ -1759,6 +1579,7 @@ def main():
         hide_index=True,
         use_container_width=True,
     )
+
 
 # ============================================================
 # 실행

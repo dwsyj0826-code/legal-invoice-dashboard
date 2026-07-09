@@ -504,7 +504,11 @@ def collect_invoices():
                         amount = parse_pdf_amount(text, firm)
                     elif fname.lower().endswith(".xlsx"):
                         buf = download_file(service, inv["id"])
-                        amount = parse_xlsx_amount(buf)
+                        # DLS는 청구본 기준으로 파싱 (원본이 아닌 실제 청구액)
+                        if firm == "DLS":
+                            amount = _parse_dls_xlsx_2025(buf)
+                        else:
+                            amount = parse_xlsx_amount(buf)
                 except Exception as e:
                     errors.append(f"[{firm}] 파싱 오류 ({fname}): {e}")
 
@@ -729,86 +733,123 @@ def collect_invoices_2025():
             errors.append(f"[2025] 폴더 조회 실패 ({fname}): {e}")
             continue
 
+        # 파일명 기반 로펌 식별 (대괄호 접두어 불필요)
+        # DLS 후보: 파일명에 "DLS" 포함된 xlsx (청구본 우선)
+        # D&A 후보: 파일명에 "대륙아주" 포함된 PDF
+        # SLP 후보: [SLP]* 서브폴더 안의 "_고객양식" 붙은 PDF (접두어 무관)
+        dls_candidates = []
+        da_candidates = []
+        slp_from_subfolders = []
+
         for item in contents:
             name = item["name"]
             is_folder = item["mimeType"] == "application/vnd.google-apps.folder"
 
-            # ★ SLP: 서브폴더 [SLP]...
-            if is_folder and name.startswith("[SLP]"):
+            if is_folder and "SLP" in name:
+                # SLP 서브폴더 탐색
                 try:
                     sub_files = list_folder(service, item["id"])
                 except Exception as e:
                     errors.append(f"[2025 SLP] 서브폴더 조회 실패 ({name}): {e}")
                     continue
+                # _고객양식 붙은 PDF (통합 인보이스). [SLP] 접두어 요구하지 않음
                 slp_pdf = next(
                     (f for f in sub_files
-                     if f["name"].startswith("[SLP]")
-                     and f["name"].lower().endswith(".pdf")
+                     if f["name"].lower().endswith(".pdf")
                      and "_고객양식" in f["name"]),
                     None,
                 )
                 if slp_pdf:
-                    try:
-                        buf = download_file(service, slp_pdf["id"])
-                        amount = _parse_slp_pdf_2025(buf)
-                    except Exception as e:
-                        errors.append(f"[2025 SLP] 파싱 오류 ({slp_pdf['name']}): {e}")
-                        amount = None
-                    if amount:
-                        records.append({
-                            "로펌": "SLP",
-                            "연도": adv_year, "월": adv_month,
-                            "기간": f"{adv_year}-{adv_month:02d}",
-                            "금액": amount,
-                            "파일명": slp_pdf["name"],
-                            "링크": slp_pdf.get("webViewLink", ""),
-                        })
-                    else:
-                        errors.append(f"[2025 SLP] 금액 추출 실패: {slp_pdf['name']}")
+                    slp_from_subfolders.append(slp_pdf)
+            elif not is_folder:
+                lname = name.lower()
+                # DLS xlsx: 파일명에 "DLS" 있고 xlsx이며 "대륙아주"는 없어야 (배포양식 아님)
+                if (lname.endswith(".xlsx")
+                        and "dls" in lname
+                        and "대륙아주" not in name):
+                    dls_candidates.append(item)
+                # D&A PDF: 파일명에 "대륙아주" 있고 PDF
+                elif lname.endswith(".pdf") and "대륙아주" in name:
+                    da_candidates.append(item)
 
-            # ★ D&A(대륙아주): [대륙아주]*.pdf
-            elif (not is_folder
-                  and name.startswith("[대륙아주]")
-                  and name.lower().endswith(".pdf")):
-                try:
-                    buf = download_file(service, item["id"])
-                    amount = _parse_draju_pdf_2025(buf)
-                except Exception as e:
-                    errors.append(f"[2025 D&A] 파싱 오류 ({name}): {e}")
-                    amount = None
-                if amount:
-                    records.append({
-                        "로펌": "D&A",
-                        "연도": adv_year, "월": adv_month,
-                        "기간": f"{adv_year}-{adv_month:02d}",
-                        "금액": amount,
-                        "파일명": name,
-                        "링크": item.get("webViewLink", ""),
-                    })
-                else:
-                    errors.append(f"[2025 D&A] 금액 추출 실패: {name}")
+        # ── SLP 처리 ──
+        for slp_pdf in slp_from_subfolders:
+            try:
+                buf = download_file(service, slp_pdf["id"])
+                amount = _parse_slp_pdf_2025(buf)
+            except Exception as e:
+                errors.append(f"[2025 SLP] 파싱 오류 ({slp_pdf['name']}): {e}")
+                amount = None
+            if amount:
+                records.append({
+                    "로펌": "SLP",
+                    "연도": adv_year, "월": adv_month,
+                    "기간": f"{adv_year}-{adv_month:02d}",
+                    "금액": amount,
+                    "파일명": slp_pdf["name"],
+                    "링크": slp_pdf.get("webViewLink", ""),
+                })
+            else:
+                errors.append(f"[2025 SLP] 금액 추출 실패: {slp_pdf['name']}")
 
-            # ★ DLS: [DLS]*.xlsx
-            elif (not is_folder
-                  and name.startswith("[DLS]")
-                  and name.lower().endswith(".xlsx")):
-                try:
-                    buf = download_file(service, item["id"])
-                    amount = _parse_dls_xlsx_2025(buf)
-                except Exception as e:
-                    errors.append(f"[2025 DLS] 파싱 오류 ({name}): {e}")
-                    amount = None
-                if amount:
-                    records.append({
-                        "로펌": "DLS",
-                        "연도": adv_year, "월": adv_month,
-                        "기간": f"{adv_year}-{adv_month:02d}",
-                        "금액": amount,
-                        "파일명": name,
-                        "링크": item.get("webViewLink", ""),
-                    })
-                else:
-                    errors.append(f"[2025 DLS] 금액 추출 실패: {name}")
+        # ── D&A(대륙아주) 처리 ──
+        # 여러 후보 있을 시: "청구서" > "자문" 우선
+        if da_candidates:
+            def da_priority(f):
+                n = f["name"]
+                return (
+                    1 if "청구서" in n else 0,
+                    1 if "자문" in n else 0,
+                    0 if any(k in n for k in EXCLUDE_KEYWORDS) else 1,
+                )
+            da_candidates.sort(key=da_priority, reverse=True)
+            best = da_candidates[0]
+            try:
+                buf = download_file(service, best["id"])
+                amount = _parse_draju_pdf_2025(buf)
+            except Exception as e:
+                errors.append(f"[2025 D&A] 파싱 오류 ({best['name']}): {e}")
+                amount = None
+            if amount:
+                records.append({
+                    "로펌": "D&A",
+                    "연도": adv_year, "월": adv_month,
+                    "기간": f"{adv_year}-{adv_month:02d}",
+                    "금액": amount,
+                    "파일명": best["name"],
+                    "링크": best.get("webViewLink", ""),
+                })
+            else:
+                errors.append(f"[2025 D&A] 금액 추출 실패: {best['name']}")
+
+        # ── DLS 처리 ──
+        # 여러 후보 시: "청구본" > "합본" > 그 외
+        if dls_candidates:
+            def dls_priority(f):
+                n = f["name"]
+                return (
+                    2 if "청구본" in n else (1 if "합본" in n else 0),
+                    0 if "원본" in n else 1,
+                )
+            dls_candidates.sort(key=dls_priority, reverse=True)
+            best = dls_candidates[0]
+            try:
+                buf = download_file(service, best["id"])
+                amount = _parse_dls_xlsx_2025(buf)
+            except Exception as e:
+                errors.append(f"[2025 DLS] 파싱 오류 ({best['name']}): {e}")
+                amount = None
+            if amount:
+                records.append({
+                    "로펌": "DLS",
+                    "연도": adv_year, "월": adv_month,
+                    "기간": f"{adv_year}-{adv_month:02d}",
+                    "금액": amount,
+                    "파일명": best["name"],
+                    "링크": best.get("webViewLink", ""),
+                })
+            else:
+                errors.append(f"[2025 DLS] 금액 추출 실패: {best['name']}")
 
     # 표시기간 필드 추가 (2026과 일관성)
     for r in records:
@@ -850,34 +891,53 @@ def _collect_2025_h2(service, parent_folder, records, errors):
             errors.append(f"[2025 H2 {firm}] 폴더 조회 실패: {e}")
             continue
 
+        # 로펌별 파일 후보 수집 (월별로 하나만 채택)
+        candidates_by_month = {}  # {month: [(priority, file, parser)]}
+
         for f in files:
             if f["mimeType"] == "application/vnd.google-apps.folder":
                 continue
             name = f["name"]
+            lname = name.lower()
 
-            # 파싱 대상 필터: 로펌별
+            # 로펌별 파일 판별 + 우선순위 부여
+            parser = None
+            priority = 0
+
             if firm == "SLP":
-                if not (name.lower().endswith(".pdf") and "_고객양식" in name):
+                if not (lname.endswith(".pdf") and "_고객양식" in name):
                     continue
                 parser = _parse_slp_pdf_2025
+                priority = 2 if name.startswith("[SLP]") else 1
+
             elif firm == "D&A":
-                if not name.lower().endswith(".pdf"):
+                if not lname.endswith(".pdf"):
                     continue
                 if any(k in name for k in EXCLUDE_KEYWORDS):
                     continue
                 parser = _parse_draju_pdf_2025
+                # 청구서 > 자문 순
+                priority = (2 if "청구서" in name else 0) + (1 if "자문" in name else 0)
+
             elif firm == "DLS":
-                if not name.lower().endswith(".xlsx"):
+                # xlsx만 (PDF는 xlsx의 이미지 버전일 수 있어 스킵)
+                if not lname.endswith(".xlsx"):
                     continue
-                if "청구본" not in name and "합본" not in name:
-                    continue  # 청구본 파일만
+                if any(k in name for k in EXCLUDE_KEYWORDS):
+                    continue
                 parser = _parse_dls_xlsx_2025
+                # 청구본 > 합본 > 그 외, 원본 페널티
+                priority = (
+                    (3 if "청구본" in name else 0)
+                    + (2 if "합본" in name else 0)
+                    - (1 if "원본" in name else 0)
+                )
             else:
                 continue
 
             # 자문 수행월 추출: 파일명 → PDF 본문
             month_info = extract_month(name)
-            if not month_info and name.lower().endswith(".pdf"):
+            if not month_info and lname.endswith(".pdf"):
                 try:
                     buf_probe = download_file(service, f["id"])
                     with pdfplumber.open(buf_probe) as pdf:
@@ -892,10 +952,18 @@ def _collect_2025_h2(service, parent_folder, records, errors):
 
             year, month = month_info
             if year != 2025:
-                continue  # 2025 폴더에는 2025년 자문분만
+                continue
+
+            candidates_by_month.setdefault(month, []).append((priority, f, parser))
+
+        # 월별로 최고 우선순위 파일 하나만 파싱
+        for month, cands in candidates_by_month.items():
+            cands.sort(key=lambda x: x[0], reverse=True)
+            _, best_file, parser = cands[0]
+            name = best_file["name"]
 
             try:
-                buf = download_file(service, f["id"])
+                buf = download_file(service, best_file["id"])
                 amount = parser(buf)
             except Exception as e:
                 errors.append(f"[2025 H2 {firm}] 파싱 오류 ({name}): {e}")
@@ -904,13 +972,13 @@ def _collect_2025_h2(service, parent_folder, records, errors):
             if amount:
                 records.append({
                     "로펌": firm,
-                    "연도": year, "월": month,
-                    "기간": f"{year}-{month:02d}",
-                    "표시기간": f"{year}-{month:02d}",
-                    "표시연도": year, "표시월": month,
+                    "연도": 2025, "월": month,
+                    "기간": f"2025-{month:02d}",
+                    "표시기간": f"2025-{month:02d}",
+                    "표시연도": 2025, "표시월": month,
                     "금액": amount,
                     "파일명": name,
-                    "링크": f.get("webViewLink", ""),
+                    "링크": best_file.get("webViewLink", ""),
                 })
             else:
                 errors.append(f"[2025 H2 {firm}] 금액 추출 실패: {name}")
@@ -1134,21 +1202,29 @@ def main():
 
     # ---- 사이드바 필터 ----
     with st.sidebar:
+        # 대시보드 제목·부제
+        st.markdown(
+            """
+            <div style="padding:8px 0 4px 0; border-bottom:1px solid #dee2e6; margin-bottom:12px;">
+                <div style="font-size:20px; font-weight:700; color:#1B4F72;">⚖️ 정기자문 비용</div>
+                <div style="font-size:13px; color:#6c757d;">대웅제약 법무1팀</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.header("📊 조회 설정")
 
-        # ★ 조회 모드
-        view_mode = st.radio(
-            "조회 모드",
-            ["단일 연도", "두 연도 비교"],
-            help="단일 연도: 로펌별 막대그래프. 두 연도 비교: 연도별 라인 겹쳐 표시.",
-        )
-
-        period_unit = st.radio("집계 단위", ["월별", "분기별", "반기별", "연도별"])
+        # ═════════ [1] 데이터 필터 (전체 대시보드에 적용) ═════════
+        st.markdown("#### 🔍 데이터 필터")
+        st.caption("👉 아래 필터는 **KPI · 차트 · 표 전체**에 적용됩니다.")
 
         years = sorted(df["표시연도"].unique())
 
+        # 연도 필터: 조회 모드에 따라 UI 달라짐 (아래 조회 모드 값을 미리 세션에서)
+        view_mode = st.session_state.get("view_mode_state", "단일 연도")
+
         if view_mode == "단일 연도":
-            sel_year = st.selectbox("연도", years, index=len(years) - 1)
+            sel_year = st.selectbox("연도", years, index=len(years) - 1, key="sel_year_widget")
             compare_years = None
         else:
             if len(years) < 2:
@@ -1160,12 +1236,11 @@ def main():
                     "비교할 연도 (2개 이상)",
                     years,
                     default=years[-2:],
+                    key="compare_years_widget",
                 )
                 if len(compare_years) < 2:
                     st.warning("최소 2개 연도를 선택해주세요.")
                 sel_year = None
-            if period_unit == "연도별":
-                st.caption("💡 연도별 집계는 두 연도 비교와 함께 쓰면 각 연도당 값이 1개뿐이라 라인 형태가 안 나옵니다.")
 
         all_firms = sorted(df["로펌"].unique())
 
@@ -1189,7 +1264,33 @@ def main():
         st.session_state["sel_firms_state"] = sel_firms
 
         st.divider()
-        if st.button("🔄 새로고침", use_container_width=True):
+
+        # ═════════ [2] 표시 방식 (차트·KPI 표현) ═════════
+        st.markdown("#### 🎨 표시 방식")
+        st.caption("👉 아래 옵션은 **차트 형태·KPI 계산 단위**를 바꿉니다. 데이터 범위는 그대로.")
+
+        view_mode = st.radio(
+            "조회 모드",
+            ["단일 연도", "두 연도 비교"],
+            help="단일 연도: 로펌별 막대그래프. 두 연도 비교: 연도별 라인 겹쳐 표시.",
+            key="view_mode_widget",
+        )
+        st.session_state["view_mode_state"] = view_mode
+
+        period_unit = st.radio(
+            "집계 단위",
+            ["월별", "분기별", "반기별", "연도별"],
+            help="차트 X축·KPI(평균/최고 지출) 기준. 데이터를 어떤 단위로 묶어 볼지 결정.",
+        )
+
+        if view_mode == "두 연도 비교" and period_unit == "연도별":
+            st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이라 라인 형태가 안 나옴.")
+
+        st.divider()
+
+        # ═════════ [3] 기타 ═════════
+        st.markdown("#### ⚙️ 기타")
+        if st.button("🔄 새로고침", use_container_width=True, help="Google Drive에서 최신 인보이스 다시 파싱"):
             st.cache_data.clear()
             st.rerun()
 
@@ -1198,8 +1299,7 @@ def main():
                 for e in errors:
                     st.caption(e)
 
-        # ★ 관리자 스냅샷 UI (분기마다 한 번 사용)
-        st.divider()
+        # 관리자 스냅샷 UI (분기마다 한 번 사용)
         with st.expander("🛠 관리자 스냅샷 (분기 확정용)"):
             _admin_snapshot_ui()
 
@@ -1264,16 +1364,39 @@ def main():
 
     period_totals = fdf.assign(__pk=period_key).groupby("__pk")["금액"].sum()
 
+    # 조회 기간 (실제 데이터가 있는 범위)
+    all_periods_sorted = sorted(fdf["표시기간"].unique())
+    period_from = all_periods_sorted[0] if all_periods_sorted else "-"
+    period_to = all_periods_sorted[-1] if all_periods_sorted else "-"
+    n_periods = len(period_totals)  # 집계 단위별 몇 개 구간?
+
+    # ★ 조회 기간 배너
+    st.markdown(
+        f"""
+        <div style="background:#eaf3fb; padding:10px 16px; border-radius:8px;
+                    border-left:4px solid #1B4F72; margin-bottom:12px; font-size:15px;">
+            📅 <b>조회 기간</b>: {period_from} ~ {period_to}
+            &nbsp;·&nbsp; 집계 단위: <b>{period_unit}</b>
+            &nbsp;·&nbsp; 총 {n_periods}개 {period_unit.replace('별','')}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     c1, c2, c3, c4 = st.columns(4)
     total = fdf["금액"].sum()
     avg = period_totals.mean() if not period_totals.empty else 0
     peak = period_totals.idxmax() if not period_totals.empty else "-"
     n_firms = fdf["로펌"].nunique()
 
-    c1.metric("총 비용 (VAT 제외)", f"₩{total:,.0f}")
-    c2.metric(avg_label, f"₩{avg:,.0f}")
-    c3.metric(peak_label, str(peak))
-    c4.metric("활성 로펌", f"{n_firms}곳")
+    c1.metric("총 비용 (VAT 제외)", f"₩{total:,.0f}",
+              help=f"조회 기간({period_from} ~ {period_to}) 전체 합계")
+    c2.metric(avg_label, f"₩{avg:,.0f}",
+              help=f"{period_unit} 기준 평균 (구간 {n_periods}개)")
+    c3.metric(peak_label, str(peak),
+              help=f"{period_unit} 중 지출이 가장 컸던 구간")
+    c4.metric("활성 로펌", f"{n_firms}곳",
+              help="선택된 조건에서 지출이 발생한 로펌 수")
 
     st.divider()
 
@@ -1337,21 +1460,24 @@ def main():
                 )
             )
 
-        # ★ 카테고리별 총합 annotation
+        # ★ 카테고리별 총합 annotation — 최고 개별 막대 바로 위에 배치
         category_totals = chart_df.groupby("집계")["금액"].sum()
+        category_max_bar = chart_df.groupby("집계")["금액"].max()  # 카테고리 안 최대 개별값
         annotations = []
         for cat in periods_sorted:
             tot = category_totals.get(cat, 0)
+            max_bar = category_max_bar.get(cat, 0)
             if tot > 0:
                 annotations.append(dict(
-                    x=cat, y=tot,
+                    x=cat, y=max_bar,   # ← 총합 값이 아닌 '최고 개별 막대' 위치
                     text=f"<b>합계 ₩{tot/10_000:,.0f}만</b>",
                     showarrow=False,
-                    yshift=18,
+                    yshift=20,
                     font=dict(size=12, color="#1B4F72"),
                 ))
 
-        y_max = float(category_totals.max()) if not category_totals.empty else 0
+        # Y축 상한: 최대 개별 막대 기준 (총합 아님) — 데드스페이스 제거
+        y_max = float(chart_df["금액"].max()) if not chart_df.empty else 0
 
         fig.update_layout(
             barmode="group",
@@ -1366,7 +1492,8 @@ def main():
                 title="금액 (원)",
                 tickformat=",",
                 tickfont=dict(size=13),
-                range=[0, y_max * 1.18] if y_max > 0 else None,
+                # 배지 공간 확보: 최대 막대의 1.15배
+                range=[0, y_max * 1.15] if y_max > 0 else None,
             ),
             legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
             height=520,
@@ -1445,6 +1572,29 @@ def main():
 
     st.plotly_chart(fig, use_container_width=True)
 
+    # ---- 피벗 테이블 ----
+    st.subheader("📊 로펌별 기간 합계")
+
+    pivot = fdf.pivot_table(
+        values="금액",
+        index="로펌",
+        columns="표시기간",
+        aggfunc="sum",
+        fill_value=0,
+        margins=True,
+        margins_name="합계",
+    )
+    cols = sorted([c for c in pivot.columns if c != "합계"]) + ["합계"]
+    pivot = pivot.reindex(columns=cols)
+
+    st.dataframe(
+        pivot.style.format("₩{:,.0f}").map(
+            lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns
+        ),
+        use_container_width=True,
+    )
+
+
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")
 
@@ -1476,29 +1626,6 @@ def main():
         hide_index=True,
         use_container_width=True,
     )
-
-    # ---- 피벗 테이블 ----
-    st.subheader("📊 로펌별 기간 합계")
-
-    pivot = fdf.pivot_table(
-        values="금액",
-        index="로펌",
-        columns="표시기간",
-        aggfunc="sum",
-        fill_value=0,
-        margins=True,
-        margins_name="합계",
-    )
-    cols = sorted([c for c in pivot.columns if c != "합계"]) + ["합계"]
-    pivot = pivot.reindex(columns=cols)
-
-    st.dataframe(
-        pivot.style.format("₩{:,.0f}").map(
-            lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns
-        ),
-        use_container_width=True,
-    )
-
 
 # ============================================================
 # 실행

@@ -236,20 +236,20 @@ def extract_month(filename):
     if m:
         return (int(m.group(1)), int(m.group(2)))
 
-    # "(2604)" — DLS 스타일
-    m = re.search(r"\(26(\d{2})\)", filename)
+    # "(2604)", "(2510)" — DLS 스타일 (YY = 24~29)
+    m = re.search(r"\((2[4-9])(\d{2})\)", filename)
     if m:
-        return (2026, int(m.group(1)))
+        return (2000 + int(m.group(1)), int(m.group(2)))
 
-    # "26.04" — 율촌 스타일
-    m = re.search(r"(?<!\d)26\.(\d{2})", filename)
+    # "26.04", "25.10" — 율촌 스타일
+    m = re.search(r"(?<!\d)(2[4-9])\.(\d{2})", filename)
     if m:
-        return (2026, int(m.group(1)))
+        return (2000 + int(m.group(1)), int(m.group(2)))
 
-    # "26MMDDDD" — 율촌 ID 스타일 (B-26051222)
-    m = re.search(r"26(\d{2})\d{4}", filename)
+    # "26MMDDDD", "25MMDDDD" — 율촌 ID 스타일 (B-26051222)
+    m = re.search(r"(2[4-9])(\d{2})\d{4}", filename)
     if m:
-        return (2026, int(m.group(1)))
+        return (2000 + int(m.group(1)), int(m.group(2)))
 
     # "20260520"
     m = re.search(r"(202[4-9])(\d{2})\d{2}", filename)
@@ -568,11 +568,16 @@ def _parse_slp_pdf_2025(buf):
     """
     SLP PDF 라인 아이템 표에서 TOTAL 컬럼 합산 → 통합 총액 (VAT 제외).
     양식: [SLP]*_고객양식.pdf. 표에 CLIENT/DESC/DATE/ATTORNEY/HOURS/RATE/TOTAL/REMARKS 열.
+    폴백: 표 인식 실패 시 텍스트에서 '총합계' 근처 값 또는 ₩숫자 패턴 합산.
     """
+    # 우선 시도: pdfplumber extract_tables
     try:
         total = 0
+        text_all = ""
+        buf.seek(0)
         with pdfplumber.open(buf) as pdf:
             for page in pdf.pages:
+                text_all += (page.extract_text() or "") + "\n"
                 tables = page.extract_tables() or []
                 for tbl in tables:
                     for row in tbl:
@@ -587,7 +592,34 @@ def _parse_slp_pdf_2025(buf):
                                 total += int(re.sub(r"[^\d]", "", m.group(1)))
                             except ValueError:
                                 pass
-        return total if total > 0 else None
+        if total > 0:
+            return total
+
+        # 폴백 1: 텍스트에서 '총합계' 근처 큰 값 (하단 요약 표)
+        t = re.sub(r"\s+", " ", text_all)
+        # "총합계 11,900,000" 또는 "총합계 ... 11,900,000 13,090,000"
+        totals = re.findall(r"총합계[^\d]{1,20}([\d,]{7,})", t)
+        cand_totals = []
+        for tot in totals:
+            v = int(re.sub(r"[^\d]", "", tot))
+            if v > 100_000:
+                cand_totals.append(v)
+        if cand_totals:
+            # VAT 제외가 우선 (작은 값, 큰 값은 VAT 포함일 것)
+            return min(cand_totals)
+
+        # 폴백 2: 라인 아이템 ₩숫자 다 합산 (인식되는 표만)
+        amounts = re.findall(r"₩\s*([\d,]+)", t)
+        if amounts:
+            total = 0
+            for a in amounts[:-2]:  # 마지막 몇 개는 요약 총합일 가능성 - 라인만 합산
+                v = int(re.sub(r"[^\d]", "", a))
+                if v > 1000:  # 노이즈 필터
+                    total += v
+            if total > 100_000:
+                return total
+
+        return None
     except Exception:
         return None
 
@@ -621,51 +653,94 @@ def _parse_draju_pdf_2025(buf):
 def _parse_dls_xlsx_2025(buf):
     """
     DLS xlsx: '청구본' (할인 적용 최종 청구액) 통합 총액.
-    합본 파일(2501)엔 원본/청구본 시트 병존 → 청구본 시트 우선.
-    청구본 시트 마지막 '총합계' 행의 값 중, 두 값 있으면 작은 값(=청구본, 할인적용).
+    다양한 시트 구조 대응:
+    - 합본 파일 (2501): 원본/청구본 시트 병존
+    - 청구본 단일 파일 (2502~): 시트 하나 또는 데이터+rate 두 시트
+    전략: 모든 (양식 아닌) 시트를 스캔, 마지막 '총합계' 행의 값들 중
+          두 값이면 작은 값(청구본), 하나면 그 값, 다수면 최댓값과 최솟값 중
+          최솟값 (할인 적용된 값).
+    폴백: '최종 청구금액' 컬럼 헤더 아래 값, TOTAL 컬럼 합산.
     """
     try:
         wb = openpyxl.load_workbook(buf, data_only=True)
 
-        # 청구본 rate 시트 우선
-        target = None
-        for ws in wb.worksheets:
-            title = ws.title or ""
-            if "청구본" in title and "rate" in title.lower():
-                target = ws
-                break
-        # 폴백 1: '청구본' 포함 시트
-        if target is None:
-            for ws in wb.worksheets:
-                if "청구본" in (ws.title or ""):
-                    target = ws
-                    break
-        # 폴백 2: rate 시트
-        if target is None:
-            for ws in wb.worksheets:
-                if "rate" in (ws.title or "").lower() and "양식" not in (ws.title or ""):
-                    target = ws
-                    break
-        # 폴백 3: 마지막 시트
-        if target is None:
-            target = wb.worksheets[-1]
+        # 우선순위 정렬: 청구본 rate > 청구본 > rate > 그 외
+        def sheet_priority(ws):
+            t = (ws.title or "")
+            tl = t.lower()
+            if "양식" in t:
+                return -1  # 스킵
+            score = 0
+            if "청구본" in t: score += 4
+            if "rate" in tl: score += 2
+            return score
 
-        # '총합계' 행에서 큰 숫자 수집. 마지막 총합계 행이 최종 요약.
-        last_total_nums = []
-        for row in target.iter_rows(values_only=True):
-            if not row:
-                continue
-            if any(v and "총합계" in str(v) for v in row):
-                nums = [float(v) for v in row
-                        if isinstance(v, (int, float)) and v > 100_000]
-                if nums:
-                    last_total_nums = nums
+        sheets = [ws for ws in wb.worksheets if sheet_priority(ws) >= 0]
+        sheets.sort(key=sheet_priority, reverse=True)
 
-        if last_total_nums:
-            # 두 개 이상: [청구본, 원본] → 청구본이 원본 대비 작음
-            if len(last_total_nums) >= 2:
-                return int(round(min(last_total_nums)))
-            return int(round(last_total_nums[0]))
+        # 각 시트에서 '총합계' 행의 값들을 수집
+        for ws in sheets:
+            last_total_nums = []
+            for row in ws.iter_rows(values_only=True):
+                if not row:
+                    continue
+                if any(v and "총합계" in str(v) for v in row):
+                    nums = [float(v) for v in row
+                            if isinstance(v, (int, float)) and v > 100_000]
+                    if nums:
+                        last_total_nums = nums
+
+            if last_total_nums:
+                if len(last_total_nums) >= 2:
+                    # 두 값 이상: 청구본(할인적용, 작음) 선택
+                    return int(round(min(last_total_nums)))
+                return int(round(last_total_nums[0]))
+
+        # 폴백 1: '최종 청구금액' 헤더 아래 열 합산
+        for ws in sheets:
+            for row in ws.iter_rows(values_only=False):
+                for cell in row:
+                    if cell.value and "최종 청구금액" in str(cell.value):
+                        col = cell.column
+                        col_total = 0
+                        for r in ws.iter_rows(min_row=cell.row + 1,
+                                              min_col=col, max_col=col,
+                                              values_only=True):
+                            v = r[0]
+                            if isinstance(v, (int, float)) and v > 10_000:
+                                col_total += v
+                        if col_total > 100_000:
+                            return int(round(col_total))
+
+        # 폴백 2: TOTAL 컬럼 합산 (라인 아이템)
+        for ws in sheets:
+            header_row = header_col = None
+            for row in ws.iter_rows(values_only=False):
+                for cell in row:
+                    if cell.value and str(cell.value).strip().upper() == "TOTAL":
+                        header_row = cell.row
+                        header_col = cell.column
+                        break
+                if header_row:
+                    break
+            if header_row and header_col:
+                col_total = 0
+                for r in ws.iter_rows(min_row=header_row + 1,
+                                      min_col=header_col, max_col=header_col,
+                                      values_only=True):
+                    v = r[0]
+                    if isinstance(v, (int, float)) and v > 0:
+                        col_total += v
+                    elif isinstance(v, str):
+                        cleaned = re.sub(r"[^\d]", "", v)
+                        if cleaned:
+                            try:
+                                col_total += int(cleaned)
+                            except ValueError:
+                                pass
+                if col_total > 100_000:
+                    return int(round(col_total))
+
         return None
     except Exception:
         return None
@@ -763,13 +838,20 @@ def collect_invoices_2025():
                     slp_from_subfolders.append(slp_pdf)
             elif not is_folder:
                 lname = name.lower()
+                # 제외 키워드 필터 (SLP 개별 인보이스, zip, 실비 등)
+                if any(k in name for k in EXCLUDE_KEYWORDS):
+                    continue
                 # DLS xlsx: 파일명에 "DLS" 있고 xlsx이며 "대륙아주"는 없어야 (배포양식 아님)
                 if (lname.endswith(".xlsx")
                         and "dls" in lname
                         and "대륙아주" not in name):
                     dls_candidates.append(item)
-                # D&A PDF: 파일명에 "대륙아주" 있고 PDF
-                elif lname.endswith(".pdf") and "대륙아주" in name:
+                # D&A PDF: top-level의 모든 PDF (SLP은 서브폴더 안에 있으므로)
+                # 단, 계열사 개별 인보이스(INVOICE_*_대웅제약.pdf 등)나 SLP 통합본은 제외
+                elif lname.endswith(".pdf"):
+                    # SLP 스타일 통합본은 top-level에 없어야 하지만 방어 차원
+                    if "_고객양식" in name or "INVOICE" in name:
+                        continue
                     da_candidates.append(item)
 
         # ── SLP 처리 ──

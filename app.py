@@ -1054,19 +1054,25 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
-        /* 사이드바 상단 여백 축소 → 대시보드 제목이 위로 붙음 */
-        section[data-testid="stSidebar"] > div:first-child,
+        /* 사이드바 상단 여백 강제 제거 */
+        section[data-testid="stSidebar"],
         section[data-testid="stSidebar"] > div,
-        section[data-testid="stSidebar"] div[data-testid="stSidebarUserContent"],
-        section[data-testid="stSidebar"] div[data-testid="stSidebarContent"],
-        div[data-testid="stSidebarNav"] + div,
-        div[data-testid="stSidebarUserContent"] {
+        section[data-testid="stSidebar"] > div > div,
+        section[data-testid="stSidebar"] > div > div > div,
+        section[data-testid="stSidebar"] .block-container,
+        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"],
+        [data-testid="stSidebarUserContent"] {
+            padding-top: 0 !important;
+            margin-top: 0 !important;
+        }
+        /* 사이드바 첫 번째 자식 요소만 위쪽 여유 소량 */
+        [data-testid="stSidebarUserContent"] > div:first-child {
             padding-top: 0.25rem !important;
             margin-top: 0 !important;
         }
-        /* Streamlit 상단 헤더 자체 축소 */
-        section[data-testid="stSidebar"] .block-container {
-            padding-top: 0.5rem !important;
+        /* 사이드바 collapse 버튼 위 공백 제거 */
+        [data-testid="stSidebarCollapseButton"] {
+            top: 0.25rem !important;
         }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
         span[data-baseweb="tag"] {
@@ -1398,7 +1404,7 @@ def main():
                     text=fd["금액"].apply(lambda v: f"{v/10_000:,.0f}만"),
                     textposition="inside",
                     textangle=0,
-                    textfont=dict(size=11, color="white"),
+                    textfont=dict(size=14, color="white"),
                     hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
                 )
             )
@@ -1416,7 +1422,7 @@ def main():
                     text=f"<b>합계 ₩{tot/10_000:,.0f}만</b>",
                     showarrow=False,
                     yshift=20,
-                    font=dict(size=12, color="#1B4F72"),
+                    font=dict(size=15, color="#1B4F72"),
                 ))
 
         # Y축 상한: 최대 개별 막대 기준 (총합 아님) — 데드스페이스 제거
@@ -1494,7 +1500,7 @@ def main():
                         lambda v: f"{v/10_000:,.0f}만" if pd.notna(v) and v > 0 else ""
                     ),
                     textposition=tpos,
-                    textfont=dict(size=11, color="#333"),
+                    textfont=dict(size=14, color="#333"),
                     hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
                     connectgaps=False,
                 )
@@ -1550,29 +1556,42 @@ def main():
     ) + ["합계"]
     pivot = pivot.reindex(columns=cols)
 
-    # 두 연도 비교 모드일 때 "월/분기/반기 그룹" 경계 감지
-    # 예: 2025-01, 2026-01, 2025-02, 2026-02 → 2026-01 뒤·2026-02 뒤에 굵은 선
+    # 두 연도 비교 모드일 때 월/분기/반기 그룹별로 배경색 교차
+    # (Streamlit dataframe이 border CSS를 무시하기 때문에 배경색으로 그룹 구분)
     def _group_key(c):
-        """컬럼명에서 '연도' 부분을 뺀 나머지 (예: '2025-01' → '01', '2025-Q1' → 'Q1')."""
         if not isinstance(c, str) or c == "합계":
             return c
         parts = c.split("-", 1)
         return parts[1] if len(parts) == 2 else c
 
     data_cols_ordered = [c for c in pivot.columns if c != "합계"]
-    boundary_cols = set()
+    col_group_bg = {}  # 컬럼 → 배경색
     if view_mode == "두 연도 비교" and len(data_cols_ordered) > 1:
-        for i in range(len(data_cols_ordered) - 1):
-            if _group_key(data_cols_ordered[i]) != _group_key(data_cols_ordered[i + 1]):
-                boundary_cols.add(data_cols_ordered[i])
+        # 그룹 순서대로 짝수/홀수 교차 배경
+        groups_seen = []
+        for c in data_cols_ordered:
+            g = _group_key(c)
+            if g not in groups_seen:
+                groups_seen.append(g)
+        for c in data_cols_ordered:
+            g = _group_key(c)
+            idx = groups_seen.index(g)
+            # 짝수 그룹 = 흰색, 홀수 그룹 = 연회색
+            col_group_bg[c] = "background-color: #F5F7FA;" if idx % 2 == 1 else ""
 
-    def _highlight_and_border(df):
-        """'합계' 행·열 강조 + 두 연도 비교 시 월 그룹 경계에 굵은 세로선."""
+    def _highlight_and_group(df):
+        """'합계' 행·열 강조 + 두 연도 비교 시 월 그룹별 배경색 교차."""
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
         emphasis = "background-color: #E9ECEF; font-weight: 700; color: #1B4F72;"
-        boundary = " border-right: 3px solid #495057;"
 
-        # 합계 행 강조
+        # 월 그룹별 배경색
+        for c, bg in col_group_bg.items():
+            if bg and c in df.columns:
+                for r in df.index:
+                    if r != "합계":
+                        styles.loc[r, c] = bg
+
+        # 합계 행 강조 (그룹 배경 위에 덮어씀)
         if "합계" in df.index:
             for c in df.columns:
                 styles.loc["합계", c] = emphasis
@@ -1582,23 +1601,15 @@ def main():
             for r in df.index:
                 styles.loc[r, "합계"] = emphasis
 
-        # 월/분기 그룹 경계 굵은 세로선
-        for c in boundary_cols:
-            if c in df.columns:
-                for r in df.index:
-                    styles.loc[r, c] = styles.loc[r, c] + boundary
-
         return styles
 
     st.dataframe(
         pivot.style
             .format("₩{:,.0f}")
             .map(lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns)
-            .apply(_highlight_and_border, axis=None),
+            .apply(_highlight_and_group, axis=None),
         use_container_width=True,
     )
-    if view_mode == "두 연도 비교" and boundary_cols:
-        st.caption("💡 굵은 세로선이 매 월(또는 분기·반기) 세트 사이 구분입니다.")
 
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")

@@ -1173,13 +1173,13 @@ def main():
     # ---- 데이터 로드 (스냅샷 + 라이브) ----
     snapshot = load_snapshot()
 
+    # 스냅샷 상태 메시지는 사이드바 '기타'에서 표시 (변수에 저장)
+    snapshot_status_msg = None
     if snapshot:
         confirmed_until = snapshot.get("confirmed_until", "")
         confirmed_records = snapshot.get("records", [])
-        # 확정 스냅샷에도 오버라이드 적용 (구 스냅샷에 잘못 저장된 값 대응)
         confirmed_records = apply_manual_overrides(confirmed_records)
         with st.spinner(f"📂 최신 데이터 (`{confirmed_until}` 이후) 파싱 중..."):
-            # 스냅샷 이후 기간만 라이브 파싱
             live_records, errors = collect_invoices()
             live_records = apply_manual_overrides(live_records)
             live_records = [
@@ -1187,12 +1187,14 @@ def main():
                 if str(r.get("표시기간", "")) > confirmed_until
             ]
         records = confirmed_records + live_records
-        st.caption(
-            f"✅ 확정 데이터: **{confirmed_until}** 까지 "
-            f"({len(confirmed_records)}건, "
-            f"{snapshot.get('generated_at', '')[:10]} 생성) · "
-            f"라이브 데이터: {len(live_records)}건"
-        )
+        snapshot_status_msg = {
+            "type": "success",
+            "text": (
+                f"✅ 확정 데이터: **{confirmed_until}** 까지\n"
+                f"({len(confirmed_records)}건, {snapshot.get('generated_at', '')[:10]} 생성)\n"
+                f"라이브 데이터: {len(live_records)}건"
+            ),
+        }
     else:
         with st.spinner("📂 구글 드라이브에서 인보이스를 읽는 중..."):
             records_2026, errors_2026 = collect_invoices()
@@ -1200,7 +1202,10 @@ def main():
             records_2025, errors_2025 = collect_invoices_2025()
             records = records_2026 + records_2025
             errors = errors_2026 + errors_2025
-        st.info("💡 스냅샷 파일이 없어 전체 라이브 파싱합니다. 사이드바 '🛠 관리자'에서 스냅샷을 생성하세요.")
+        snapshot_status_msg = {
+            "type": "info",
+            "text": "💡 스냅샷 파일 없음\n전체 라이브 파싱 중\n아래 관리자 스냅샷에서 생성 가능",
+        }
 
     if not records:
         st.error("인보이스 데이터를 찾을 수 없습니다. 폴더 공유 설정을 확인해 주세요.")
@@ -1314,6 +1319,13 @@ def main():
             with st.expander(f"⚠️ 파싱 이슈 ({len(errors)}건)"):
                 for e in errors:
                     st.caption(e)
+
+        # 스냅샷 상태 메시지
+        if snapshot_status_msg:
+            if snapshot_status_msg["type"] == "success":
+                st.success(snapshot_status_msg["text"])
+            else:
+                st.info(snapshot_status_msg["text"])
 
         # 관리자 스냅샷 UI (분기마다 한 번 사용)
         with st.expander("🛠 관리자 스냅샷 (분기 확정용)"):

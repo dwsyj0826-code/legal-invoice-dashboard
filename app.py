@@ -1104,23 +1104,22 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
-        /* ★★ 사이드바 상단 헤더/공백 완전 제거 ★★ */
+        /* 사이드바 상단 헤더 축소 (접기 버튼은 유지) */
         [data-testid="stSidebarHeader"] {
-            display: none !important;
+            padding-top: 0.25rem !important;
+            padding-bottom: 0 !important;
+            min-height: 2rem !important;
+            height: auto !important;
         }
         [data-testid="stSidebar"] > div:first-child {
-            padding-top: 0.5rem !important;
+            padding-top: 0 !important;
         }
         [data-testid="stSidebarUserContent"] {
-            padding-top: 0.5rem !important;
+            padding-top: 0.25rem !important;
             margin-top: 0 !important;
         }
         [data-testid="stSidebar"] .block-container {
-            padding-top: 0.5rem !important;
-        }
-        /* collapse 버튼 위치 */
-        [data-testid="stSidebarCollapseButton"] {
-            top: 0.5rem !important;
+            padding-top: 0.25rem !important;
         }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
         span[data-baseweb="tag"] {
@@ -1405,35 +1404,40 @@ def main():
             "월별": "전월", "분기별": "전분기",
             "반기별": "전반기", "연도별": "전년"
         }[period_unit]
-        delta_label = f"{unit_prev} 대비"
         sorted_series = period_totals.sort_index()
         if len(sorted_series) >= 2:
             last_v = float(sorted_series.iloc[-1])
             prev_v = float(sorted_series.iloc[-2])
+            last_period_label = str(sorted_series.index[-1])
+            delta_label = f"{unit_prev} 대비 ({last_period_label})"
             delta_value = f"₩{last_v:,.0f}"
             if prev_v > 0:
                 pct = (last_v - prev_v) / prev_v * 100
                 delta_pct = f"{pct:+.1f}%"
-                delta_help = f"최신 {period_unit.replace('별','')} 값이 직전 {period_unit.replace('별','')} 대비 얼마나 변했는지"
+                delta_help = f"{last_period_label} 값이 직전 {period_unit.replace('별','')} 대비 얼마나 변했는지"
             else:
                 delta_pct = "N/A"
         else:
+            delta_label = f"{unit_prev} 대비"
             delta_value = "-"
             delta_help = f"직전 {period_unit.replace('별','')} 데이터가 없어 계산 불가"
     else:  # 두 연도 비교
-        delta_label = "전년 대비 총액"
         year_totals = fdf.groupby("표시연도")["금액"].sum().sort_index()
         if len(year_totals) >= 2:
             latest_y = float(year_totals.iloc[-1])
             prev_y = float(year_totals.iloc[-2])
+            latest_year_label = int(year_totals.index[-1])
+            prev_year_label = int(year_totals.index[-2])
+            delta_label = f"전년 대비 총액 ({latest_year_label})"
             delta_value = f"₩{latest_y:,.0f}"
             if prev_y > 0:
                 pct = (latest_y - prev_y) / prev_y * 100
                 delta_pct = f"{pct:+.1f}%"
-                delta_help = f"{int(year_totals.index[-1])}년 총액이 {int(year_totals.index[-2])}년 대비 얼마나 변했는지"
+                delta_help = f"{latest_year_label}년 총액이 {prev_year_label}년 대비 얼마나 변했는지"
             else:
                 delta_pct = "N/A"
         else:
+            delta_label = "전년 대비 총액"
             delta_value = "-"
             delta_help = "비교할 연도 데이터가 부족합니다"
 
@@ -1447,8 +1451,35 @@ def main():
               help=f"조회 기간({period_from} ~ {period_to}) 전체 합계")
     c2.metric(avg_label, f"₩{avg:,.0f}",
               help=f"{period_unit} 기준 평균 (구간 {n_periods}개)")
-    c3.metric(peak_label, str(peak),
-              help=f"{period_unit} 중 지출이 가장 컸던 구간")
+    # 최고 지출월/분기/반기/연도 카드 — 값 뒤에 (금액) 병기 (커스텀 HTML)
+    _peak_amt = float(period_totals.max()) if not period_totals.empty else 0
+    _peak_help = f"{period_unit} 중 지출이 가장 컸던 구간"
+    _peak_help_icon = (
+        f'<span style="display:inline-block; width:14px; height:14px; line-height:12px; '
+        f'border-radius:50%; border:1px solid #adb5bd; text-align:center; '
+        f'font-size:10px; color:#6c757d; cursor:help; margin-left:6px; '
+        f'vertical-align:middle;" title="{_peak_help}">?</span>'
+    )
+    _peak_amt_str = (
+        f'<span style="font-size:1rem; color:#6C757D; font-weight:500; '
+        f'margin-left:6px; white-space:nowrap;">(₩{_peak_amt/10_000:,.0f}만)</span>'
+    )
+    c3.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+                    border-radius: 12px; padding: 16px 20px; border-left: 4px solid #1B4F72;
+                    height: 100%;">
+            <div style="font-size: 0.95rem; color: #495057;">
+                {peak_label}{_peak_help_icon}
+            </div>
+            <div style="font-size: 1.6rem; font-weight: 700; color: #1B4F72; margin-top: 4px;
+                        white-space: nowrap;">
+                {peak}{_peak_amt_str}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     c4.metric("활성 로펌", f"{n_firms}곳",
               help="선택된 조건에서 지출이 발생한 로펌 수")
     # 5번째 KPI: 증감률을 비용 옆에 강조 표시 (커스텀 HTML)
@@ -1970,7 +2001,6 @@ def main():
             key="detail_month_widget",
             on_change=_handle_month_shortcut,
         )
-        # 실제 값 (특수 라벨 제외)
         detail_months = [m for m in detail_months_raw if m in all_months]
 
     tbl = fdf[

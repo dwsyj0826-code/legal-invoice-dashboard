@@ -1411,12 +1411,22 @@ def main():
         except ValueError:
             pass
 
+    # 다른 st.metric 카드와 동일한 ? 물음표 아이콘 (호버 툴팁)
+    _help_icon = (
+        f'<span style="display:inline-block; width:14px; height:14px; line-height:12px; '
+        f'border-radius:50%; border:1px solid #adb5bd; text-align:center; '
+        f'font-size:10px; color:#6c757d; cursor:help; margin-left:6px; '
+        f'vertical-align:middle;" title="{delta_help or ""}">?</span>'
+    )
+
     c5.markdown(
         f"""
         <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
                     border-radius: 12px; padding: 16px 20px; border-left: 4px solid #1B4F72;
-                    height: 100%;" title="{delta_help or ''}">
-            <div style="font-size: 0.95rem; color: #495057;">{delta_label}</div>
+                    height: 100%;">
+            <div style="font-size: 0.95rem; color: #495057;">
+                {delta_label}{_help_icon}
+            </div>
             <div style="font-size: 1.5rem; font-weight: 700; color: #1B4F72; margin-top: 4px;
                         white-space: nowrap;">
                 {delta_value or '-'}{_delta_html}
@@ -1462,13 +1472,14 @@ def main():
                 st.session_state["recent_offset"] = offset - 1
                 st.rerun()
 
-        # HTML 표
-        html = '<table style="width:100%; border-collapse:collapse; font-size:15px;">'
+        # HTML 표 (열 너비 균등: table-layout:fixed)
+        html = ('<table style="width:100%; border-collapse:collapse; font-size:15px; '
+                'table-layout:fixed;">')
         html += '<tr style="background:#f1f3f5; border-bottom:2px solid #dee2e6;">'
-        html += '<th style="padding:10px; text-align:center;">비용발생월</th>'
+        html += '<th style="padding:10px; text-align:center; word-wrap:break-word;">비용발생월</th>'
         for firm in firms_sorted:
-            html += f'<th style="padding:10px; text-align:center;">{firm}</th>'
-        html += '<th style="padding:10px; text-align:center; background:#dee2e6;">총 금액</th>'
+            html += f'<th style="padding:10px; text-align:center; word-wrap:break-word;">{firm}</th>'
+        html += '<th style="padding:10px; text-align:center; word-wrap:break-word; background:#dee2e6;">총 금액</th>'
         html += '</tr>'
 
         for period in display_months:
@@ -1500,7 +1511,6 @@ def main():
         html += '</table>'
 
         st.markdown(html, unsafe_allow_html=True)
-        st.caption("💡 연노랑 = 전체 데이터 중 최신 월 · 금액 클릭 시 PDF 새 탭 · ◀▶로 이전/다음 월")
         st.markdown("<br>", unsafe_allow_html=True)
         st.divider()
     else:
@@ -1581,7 +1591,9 @@ def main():
     elif view_mode == "단일 연도":
         # ============ 막대 차트 ============
         fig = go.Figure()
-        for firm in sorted(chart_df["로펌"].unique()):
+        # 로펌 순서: firms_sorted (세종_인도네시아 마지막)와 동일하게
+        _chart_firms = [f for f in firms_sorted if f in chart_df["로펌"].unique().tolist()]
+        for firm in _chart_firms:
             fd = chart_df[chart_df["로펌"] == firm]
             fig.add_trace(
                 go.Bar(
@@ -1743,6 +1755,12 @@ def main():
         key=lambda c: col_order_map.get(c, 999),
     ) + ["합계"]
     pivot = pivot.reindex(columns=cols)
+
+    # 로펌(행) 순서: firms_sorted 순서와 동일하게 + 마지막에 '합계' 행
+    row_order = [f for f in firms_sorted if f in pivot.index.tolist()]
+    if "합계" in pivot.index:
+        row_order.append("합계")
+    pivot = pivot.reindex(index=row_order)
 
     # 두 연도 비교 모드일 때 월/분기/반기 그룹별로 배경색 교차
     def _group_key(c):

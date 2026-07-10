@@ -29,6 +29,30 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# 브라우저 탭 제목에서 "· Streamlit" 접미어 강제 제거
+import streamlit.components.v1 as _components
+_components.html(
+    """
+    <script>
+    (function() {
+        var _title = "정기자문 비용 현황";
+        function _fix() {
+            try {
+                if (window.parent && window.parent.document) {
+                    if (window.parent.document.title !== _title) {
+                        window.parent.document.title = _title;
+                    }
+                }
+            } catch (e) {}
+        }
+        _fix();
+        setInterval(_fix, 500);
+    })();
+    </script>
+    """,
+    height=0,
+)
+
 # ============================================================
 # 상수
 # ============================================================
@@ -1298,27 +1322,15 @@ def main():
 
         all_firms = order_firms(df["로펌"].unique())
 
-        # 위젯 세션 상태 초기화 (첫 렌더에만)
+        # 위젯 세션 상태 초기화 (첫 렌더에만) — 기본 전체 선택
         if "sel_firms_widget" not in st.session_state:
             st.session_state["sel_firms_widget"] = all_firms
 
-        # 로펌 라벨 + 전체 선택/해제 버튼
-        st.markdown("**로펌**")
-        bc1, bc2 = st.columns(2)
-        if bc1.button("로펌 전체 선택", use_container_width=True,
-                      key="btn_firms_all"):
-            st.session_state["sel_firms_widget"] = all_firms
-            st.rerun()
-        if bc2.button("로펌 전체 해제", use_container_width=True,
-                      key="btn_firms_none"):
-            st.session_state["sel_firms_widget"] = []
-            st.rerun()
-
+        # 로펌 필터 (드롭다운 안 'Select all' 사용 — 월 필터와 통일)
         sel_firms = st.multiselect(
-            "선택된 로펌",
+            "로펌",
             all_firms,
             key="sel_firms_widget",
-            label_visibility="collapsed",
         )
 
         st.divider()

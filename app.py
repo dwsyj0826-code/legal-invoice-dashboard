@@ -1,6 +1,6 @@
 """
 ⚖️ 법무팀 외부 로펌 비용 대시보드
-대웅제약 법무1팀 · 구글 드라이브 인보이스 자동 집계
+대웅 법무1팀 · 구글 드라이브 인보이스 자동 집계
 
 구조: Google Drive(인보이스 PDF/xlsx) → 자동 파싱 → Streamlit 대시보드
 """
@@ -1093,7 +1093,7 @@ def check_password():
     expected = st.secrets.get("DASHBOARD_PASSWORD", "dw2026")
 
     st.title("🔒 정기자문 비용 현황")
-    st.caption("대웅제약 법무1팀 · 접근 인증")
+    st.caption("대웅 법무1팀 · 접근 인증")
     st.markdown("")
 
     pw = st.text_input("비밀번호", type="password", key="pw_input")
@@ -1113,7 +1113,7 @@ def main():
     apply_custom_css()
 
     st.title("⚖️ 정기자문 비용 현황")
-    st.caption("대웅제약 법무1팀 · 구글 드라이브 인보이스 자동 집계")
+    st.caption("대웅 법무1팀 · 구글 드라이브 인보이스 자동 집계")
 
     # ---- 데이터 로드 (스냅샷 + 라이브) ----
     snapshot = load_snapshot()
@@ -1160,7 +1160,7 @@ def main():
             """
             <div style="padding:8px 0 4px 0; border-bottom:1px solid #dee2e6; margin-bottom:12px;">
                 <div style="font-size:20px; font-weight:700; color:#1B4F72;">⚖️ 정기자문 비용</div>
-                <div style="font-size:13px; color:#6c757d;">대웅제약 법무1팀</div>
+                <div style="font-size:13px; color:#6c757d;">대웅 법무1팀</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1397,7 +1397,34 @@ def main():
               help=f"{period_unit} 중 지출이 가장 컸던 구간")
     c4.metric("활성 로펌", f"{n_firms}곳",
               help="선택된 조건에서 지출이 발생한 로펌 수")
-    c5.metric(delta_label, delta_value or "-", delta=delta_pct, help=delta_help)
+    # 5번째 KPI: 증감률을 비용 옆에 강조 표시 (커스텀 HTML)
+    _delta_html = ""
+    if delta_pct and delta_pct not in ("N/A",):
+        try:
+            _pct_num = float(str(delta_pct).replace("%", "").replace("+", ""))
+            _color = "#DC3545" if _pct_num < 0 else ("#28A745" if _pct_num > 0 else "#6C757D")
+            _arrow = "▼" if _pct_num < 0 else ("▲" if _pct_num > 0 else "→")
+            _delta_html = (
+                f'<span style="color:{_color}; font-weight:800; font-size:1.05rem; '
+                f'margin-left:8px; white-space:nowrap;">{_arrow} {abs(_pct_num):.1f}%</span>'
+            )
+        except ValueError:
+            pass
+
+    c5.markdown(
+        f"""
+        <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+                    border-radius: 12px; padding: 16px 20px; border-left: 4px solid #1B4F72;
+                    height: 100%;" title="{delta_help or ''}">
+            <div style="font-size: 0.95rem; color: #495057;">{delta_label}</div>
+            <div style="font-size: 1.5rem; font-weight: 700; color: #1B4F72; margin-top: 4px;
+                        white-space: nowrap;">
+                {delta_value or '-'}{_delta_html}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.divider()
 
@@ -1422,19 +1449,13 @@ def main():
         if "세종_인도네시아" in firms_all:
             firms_sorted.append("세종_인도네시아")
 
-        # 제목 + 이전/다음 화살표
-        col_prev, col_title, col_next = st.columns([1, 8, 1])
+        # 이전/다음 화살표 (우측 상단, 표 위)
+        col_spacer, col_prev, col_next = st.columns([12, 1, 1])
         with col_prev:
             if st.button("◀", disabled=offset >= max_offset, key="btn_prev_recent",
                          use_container_width=True):
                 st.session_state["recent_offset"] = offset + 1
                 st.rerun()
-        with col_title:
-            range_label = " · ".join(display_months) if display_months else "-"
-            st.markdown(
-                f"### 📋 이번달 현황  <span style='font-size:14px; color:#6c757d; font-weight:400;'>({range_label})</span>",
-                unsafe_allow_html=True,
-            )
         with col_next:
             if st.button("▶", disabled=offset <= 0, key="btn_next_recent",
                          use_container_width=True):
@@ -1759,13 +1780,88 @@ def main():
                 styles.loc[r, "합계"] = emphasis
         return styles
 
-    st.dataframe(
-        pivot.style
-            .format("₩{:,.0f}")
-            .map(lambda v: "color: #ccc" if v == 0 else "", subset=pivot.columns)
-            .apply(_highlight_and_group, axis=None),
-        use_container_width=True,
-    )
+    # === HTML 테이블 렌더링 (로펌 열·합계 열 sticky, 중간 가로 스크롤) ===
+    def _fmt_money(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return "-"
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+        if n == 0:
+            return '<span style="color:#ccc;">₩0</span>'
+        return f"₩{n:,.0f}"
+
+    data_cols = [c for c in pivot.columns if c != "합계"]
+    firm_col_hdr = "로펌"
+    total_col_hdr = "합계"
+
+    # 스타일 상수
+    _th_base = ("padding:10px 12px; text-align:center; background:#f1f3f5; "
+                "border-bottom:2px solid #dee2e6; font-weight:700; white-space:nowrap;")
+    _td_base = ("padding:8px 12px; text-align:right; border-bottom:1px solid #e9ecef; "
+                "white-space:nowrap; font-size:14px;")
+    _sticky_left = ("position:sticky; left:0; z-index:3; background:#ffffff; "
+                    "text-align:center; font-weight:600; border-right:2px solid #dee2e6;")
+    _sticky_right = ("position:sticky; right:0; z-index:3; "
+                     "background:#E9ECEF; color:#1B4F72; font-weight:700; "
+                     "border-left:2px solid #dee2e6;")
+    _sticky_bottom = ("position:sticky; bottom:0; z-index:2; "
+                      "background:#E9ECEF; color:#1B4F72; font-weight:700; "
+                      "border-top:2px solid #dee2e6;")
+
+    html = ['<div style="max-width:100%; overflow-x:auto; border:1px solid #dee2e6; border-radius:8px;">']
+    html.append('<table style="width:100%; border-collapse:separate; border-spacing:0; font-size:14px;">')
+
+    # 헤더
+    html.append("<thead><tr>")
+    html.append(f'<th style="{_th_base}{_sticky_left} background:#f1f3f5;">{firm_col_hdr}</th>')
+    for c in data_cols:
+        bg = col_group_bg.get(c, "")
+        # 헤더는 기본 회색 유지, 그룹 표시는 셀에서
+        html.append(f'<th style="{_th_base}">{c}</th>')
+    html.append(f'<th style="{_th_base}{_sticky_right} background:#dee2e6;">{total_col_hdr}</th>')
+    html.append("</tr></thead>")
+
+    # 본문
+    html.append("<tbody>")
+    for r in pivot.index:
+        is_total_row = (r == "합계")
+        row_style = ""
+        if is_total_row:
+            row_style = "background:#E9ECEF; font-weight:700; color:#1B4F72;"
+
+        # 로펌 셀 (sticky left)
+        left_bg = "#E9ECEF" if is_total_row else "#ffffff"
+        left_fw = "700" if is_total_row else "600"
+        left_color = "#1B4F72" if is_total_row else "#212529"
+        html.append(
+            f'<tr style="{row_style}">'
+            f'<td style="{_td_base}{_sticky_left} background:{left_bg}; '
+            f'font-weight:{left_fw}; color:{left_color};">{r}</td>'
+        )
+
+        for c in data_cols:
+            v = pivot.at[r, c]
+            grp_bg = col_group_bg.get(c, "")
+            cell_style = _td_base
+            if is_total_row:
+                cell_style += "background:#E9ECEF; color:#1B4F72; font-weight:700;"
+            elif grp_bg:
+                cell_style += grp_bg
+            html.append(f'<td style="{cell_style}">{_fmt_money(v)}</td>')
+
+        v_total = pivot.at[r, "합계"] if "합계" in pivot.columns else 0
+        right_style = _td_base + _sticky_right
+        if is_total_row:
+            right_style += "font-size:15px;"
+        html.append(f'<td style="{right_style}">{_fmt_money(v_total)}</td>')
+        html.append("</tr>")
+    html.append("</tbody></table></div>")
+
+    st.markdown("".join(html), unsafe_allow_html=True)
+    if len(data_cols) > 6:
+        st.caption("💡 표에 데이터가 많으면 좌우로 드래그해서 스크롤할 수 있습니다. 로펌·합계 열은 항상 고정.")
 
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")
@@ -1777,9 +1873,28 @@ def main():
         )
     with fc2:
         all_months = sorted(fdf["표시기간"].unique(), reverse=True)
+
+        if view_mode == "두 연도 비교":
+            years_available = sorted(set(m[:4] for m in all_months))
+            btn_cols = st.columns(len(years_available))
+            for _i, _y in enumerate(years_available):
+                with btn_cols[_i]:
+                    if st.button(f"{_y} 전체", key=f"btn_month_year_{_y}",
+                                 use_container_width=True):
+                        st.session_state["detail_month_state"] = [
+                            m for m in all_months if m.startswith(_y)
+                        ]
+                        st.rerun()
+
+        if "detail_month_state" not in st.session_state:
+            st.session_state["detail_month_state"] = all_months
+
         detail_months = st.multiselect(
-            "월 필터", all_months, default=all_months, key="detail_month"
+            "월 필터", all_months,
+            default=st.session_state.get("detail_month_state", all_months),
+            key="detail_month_widget",
         )
+        st.session_state["detail_month_state"] = detail_months
 
     tbl = fdf[
         (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))

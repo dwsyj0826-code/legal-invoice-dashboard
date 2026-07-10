@@ -1054,25 +1054,23 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
-        /* 사이드바 상단 여백 강제 제거 */
-        section[data-testid="stSidebar"],
-        section[data-testid="stSidebar"] > div,
-        section[data-testid="stSidebar"] > div > div,
-        section[data-testid="stSidebar"] > div > div > div,
-        section[data-testid="stSidebar"] .block-container,
-        [data-testid="stSidebar"] [data-testid="stSidebarUserContent"],
+        /* ★★ 사이드바 상단 헤더/공백 완전 제거 ★★ */
+        [data-testid="stSidebarHeader"] {
+            display: none !important;
+        }
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 0.5rem !important;
+        }
         [data-testid="stSidebarUserContent"] {
-            padding-top: 0 !important;
+            padding-top: 0.5rem !important;
             margin-top: 0 !important;
         }
-        /* 사이드바 첫 번째 자식 요소만 위쪽 여유 소량 */
-        [data-testid="stSidebarUserContent"] > div:first-child {
-            padding-top: 0.25rem !important;
-            margin-top: 0 !important;
+        [data-testid="stSidebar"] .block-container {
+            padding-top: 0.5rem !important;
         }
-        /* 사이드바 collapse 버튼 위 공백 제거 */
+        /* collapse 버튼 위치 */
         [data-testid="stSidebarCollapseButton"] {
-            top: 0.25rem !important;
+            top: 0.5rem !important;
         }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
         span[data-baseweb="tag"] {
@@ -1184,6 +1182,16 @@ def main():
             ["월별", "분기별", "반기별", "연도별"],
             help="차트 X축·KPI(평균/최고 지출) 기준. 데이터를 어떤 단위로 묶어 볼지 결정.",
         )
+
+        # 차트 유형 (단일 연도 모드에서만 도넛 옵션 제공)
+        if view_mode == "단일 연도":
+            chart_type = st.radio(
+                "차트 유형",
+                ["시계열 (막대)", "비중 (도넛)"],
+                help="시계열: 월/분기 흐름 파악. 비중: 로펌별 비율 파악.",
+            )
+        else:
+            chart_type = "시계열 (막대)"
 
         if view_mode == "두 연도 비교" and period_unit == "연도별":
             st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이라 라인 형태가 안 나옴.")
@@ -1332,7 +1340,50 @@ def main():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3, c4 = st.columns(4)
+    # 5번째 KPI: 직전 기간 대비 (단일) 또는 전년 대비 (비교)
+    delta_label = None
+    delta_value = None
+    delta_pct = None
+    delta_help = None
+
+    if view_mode == "단일 연도":
+        unit_prev = {
+            "월별": "전월", "분기별": "전분기",
+            "반기별": "전반기", "연도별": "전년"
+        }[period_unit]
+        delta_label = f"{unit_prev} 대비"
+        sorted_series = period_totals.sort_index()
+        if len(sorted_series) >= 2:
+            last_v = float(sorted_series.iloc[-1])
+            prev_v = float(sorted_series.iloc[-2])
+            delta_value = f"₩{last_v:,.0f}"
+            if prev_v > 0:
+                pct = (last_v - prev_v) / prev_v * 100
+                delta_pct = f"{pct:+.1f}%"
+                delta_help = f"최신 {period_unit.replace('별','')} 값이 직전 {period_unit.replace('별','')} 대비 얼마나 변했는지"
+            else:
+                delta_pct = "N/A"
+        else:
+            delta_value = "-"
+            delta_help = f"직전 {period_unit.replace('별','')} 데이터가 없어 계산 불가"
+    else:  # 두 연도 비교
+        delta_label = "전년 대비 총액"
+        year_totals = fdf.groupby("표시연도")["금액"].sum().sort_index()
+        if len(year_totals) >= 2:
+            latest_y = float(year_totals.iloc[-1])
+            prev_y = float(year_totals.iloc[-2])
+            delta_value = f"₩{latest_y:,.0f}"
+            if prev_y > 0:
+                pct = (latest_y - prev_y) / prev_y * 100
+                delta_pct = f"{pct:+.1f}%"
+                delta_help = f"{int(year_totals.index[-1])}년 총액이 {int(year_totals.index[-2])}년 대비 얼마나 변했는지"
+            else:
+                delta_pct = "N/A"
+        else:
+            delta_value = "-"
+            delta_help = "비교할 연도 데이터가 부족합니다"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     total = fdf["금액"].sum()
     avg = period_totals.mean() if not period_totals.empty else 0
     peak = period_totals.idxmax() if not period_totals.empty else "-"
@@ -1346,6 +1397,7 @@ def main():
               help=f"{period_unit} 중 지출이 가장 컸던 구간")
     c4.metric("활성 로펌", f"{n_firms}곳",
               help="선택된 조건에서 지출이 발생한 로펌 수")
+    c5.metric(delta_label, delta_value or "-", delta=delta_pct, help=delta_help)
 
     st.divider()
 
@@ -1390,7 +1442,35 @@ def main():
 
     x_axis_title = {"월별": "월", "분기별": "분기", "반기별": "반기", "연도별": "연도"}[period_unit]
 
-    if view_mode == "단일 연도":
+    if view_mode == "단일 연도" and chart_type == "비중 (도넛)":
+        # ============ 도넛 차트 (로펌 비중, 조회 기간 전체 합계) ============
+        donut_df = (fdf.groupby("로펌", as_index=False)["금액"].sum()
+                       .query("금액 > 0")
+                       .sort_values("금액", ascending=False))
+        fig = go.Figure()
+        fig.add_trace(go.Pie(
+            labels=donut_df["로펌"].tolist(),
+            values=donut_df["금액"].tolist(),
+            hole=0.45,
+            marker=dict(colors=[FIRM_COLORS.get(f, "#95A5A6") for f in donut_df["로펌"]]),
+            textinfo="label+percent",
+            texttemplate="<b>%{label}</b><br>₩%{value:,.0f}<br>%{percent}",
+            textfont=dict(size=13),
+            hovertemplate="%{label}<br>₩%{value:,.0f} (%{percent})<extra></extra>",
+            sort=False,
+        ))
+        # 중앙에 총액
+        fig.update_layout(
+            annotations=[dict(
+                text=f"<b>총 ₩{fdf['금액'].sum()/10_000:,.0f}만</b>",
+                x=0.5, y=0.5, font=dict(size=18, color="#1B4F72"), showarrow=False
+            )],
+            legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center", font=dict(size=13)),
+            height=520,
+            margin=dict(t=30, b=30, l=30, r=30),
+            template="plotly_white",
+        )
+    elif view_mode == "단일 연도":
         # ============ 막대 차트 ============
         fig = go.Figure()
         for firm in sorted(chart_df["로펌"].unique()):
@@ -1557,7 +1637,6 @@ def main():
     pivot = pivot.reindex(columns=cols)
 
     # 두 연도 비교 모드일 때 월/분기/반기 그룹별로 배경색 교차
-    # (Streamlit dataframe이 border CSS를 무시하기 때문에 배경색으로 그룹 구분)
     def _group_key(c):
         if not isinstance(c, str) or c == "합계":
             return c
@@ -1565,9 +1644,8 @@ def main():
         return parts[1] if len(parts) == 2 else c
 
     data_cols_ordered = [c for c in pivot.columns if c != "합계"]
-    col_group_bg = {}  # 컬럼 → 배경색
+    col_group_bg = {}
     if view_mode == "두 연도 비교" and len(data_cols_ordered) > 1:
-        # 그룹 순서대로 짝수/홀수 교차 배경
         groups_seen = []
         for c in data_cols_ordered:
             g = _group_key(c)
@@ -1576,31 +1654,22 @@ def main():
         for c in data_cols_ordered:
             g = _group_key(c)
             idx = groups_seen.index(g)
-            # 짝수 그룹 = 흰색, 홀수 그룹 = 연회색
             col_group_bg[c] = "background-color: #F5F7FA;" if idx % 2 == 1 else ""
 
     def _highlight_and_group(df):
-        """'합계' 행·열 강조 + 두 연도 비교 시 월 그룹별 배경색 교차."""
         styles = pd.DataFrame("", index=df.index, columns=df.columns)
         emphasis = "background-color: #E9ECEF; font-weight: 700; color: #1B4F72;"
-
-        # 월 그룹별 배경색
         for c, bg in col_group_bg.items():
             if bg and c in df.columns:
                 for r in df.index:
                     if r != "합계":
                         styles.loc[r, c] = bg
-
-        # 합계 행 강조 (그룹 배경 위에 덮어씀)
         if "합계" in df.index:
             for c in df.columns:
                 styles.loc["합계", c] = emphasis
-
-        # 합계 열 강조
         if "합계" in df.columns:
             for r in df.index:
                 styles.loc[r, "합계"] = emphasis
-
         return styles
 
     st.dataframe(

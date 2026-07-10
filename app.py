@@ -1650,30 +1650,25 @@ def main():
                     name=firm,
                     marker_color=FIRM_COLORS.get(firm, "#95A5A6"),
                     text=fd["금액"].apply(lambda v: f"{v/10_000:,.0f}만"),
-                    textposition="auto",
+                    textposition="outside",   # 값 라벨을 막대 위쪽 외부에
                     textangle=0,
-                    textfont=dict(size=14, color="#212529"),
+                    textfont=dict(size=13, color="#212529"),
+                    cliponaxis=False,
                     hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
                 )
             )
 
-        # ★ 카테고리별 총합 annotation — 최고 개별 막대 바로 위에 배치
+        # X축 tick 라벨에 카테고리 총합 병합 (별도 annotation 제거)
         category_totals = chart_df.groupby("집계")["금액"].sum()
-        category_max_bar = chart_df.groupby("집계")["금액"].max()  # 카테고리 안 최대 개별값
-        annotations = []
+        xticktext = []
         for cat in periods_sorted:
             tot = category_totals.get(cat, 0)
-            max_bar = category_max_bar.get(cat, 0)
             if tot > 0:
-                annotations.append(dict(
-                    x=cat, y=max_bar,   # ← 총합 값이 아닌 '최고 개별 막대' 위치
-                    text=f"<b>합계 ₩{tot/10_000:,.0f}만</b>",
-                    showarrow=False,
-                    yshift=20,
-                    font=dict(size=15, color="#1B4F72"),
-                ))
+                xticktext.append(f"{cat}<br><b>(합계 ₩{tot/10_000:,.0f}만)</b>")
+            else:
+                xticktext.append(str(cat))
 
-        # Y축 상한: 최대 개별 막대 기준 (총합 아님) — 데드스페이스 제거
+        # Y축 상한: 최대 개별 막대 기준, 외부 라벨 공간 확보
         y_max = float(chart_df["금액"].max()) if not chart_df.empty else 0
 
         fig.update_layout(
@@ -1683,20 +1678,21 @@ def main():
                 type="category",
                 categoryorder="array",
                 categoryarray=periods_sorted,
+                tickvals=periods_sorted,
+                ticktext=xticktext,
                 tickfont=dict(size=13),
             ),
             yaxis=dict(
                 title="금액 (원)",
                 tickformat=",",
                 tickfont=dict(size=13),
-                range=[0, y_max * 1.18] if y_max > 0 else None,
+                range=[0, y_max * 1.25] if y_max > 0 else None,
             ),
-            legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
-            height=520,
-            margin=dict(t=30, b=80),
+            legend=dict(orientation="h", y=-0.22, x=0.5, xanchor="center", font=dict(size=14)),
+            height=560,
+            margin=dict(t=30, b=100),
             template="plotly_white",
             hoverlabel=dict(font_size=14),
-            annotations=annotations,
         )
 
         shapes = []

@@ -1401,40 +1401,93 @@ def main():
 
     st.divider()
 
-    # ---- 최근 3개월 요약 (단일 연도 + 월별 집계에서만) ----
+    # ---- 이번달 현황 (단일 연도 + 월별 집계에서만) — 2개월 페이지네이션 ----
     if view_mode == "단일 연도" and period_unit == "월별":
-        recent_months = sorted(fdf["표시기간"].unique(), reverse=True)[:3]
-        firms_sorted = sorted(fdf["로펌"].unique())
+        # 전체 데이터 기준으로 최신 월 (필터와 무관, 인보이스가 있는 최신 시점)
+        latest_period_global = sorted(df["표시기간"].unique(), reverse=True)[0] if not df.empty else None
+        all_periods_desc = sorted(fdf["표시기간"].unique(), reverse=True)
 
+        # 페이지네이션 offset (세션 상태)
+        if "recent_offset" not in st.session_state:
+            st.session_state["recent_offset"] = 0
+        max_offset = max(0, len(all_periods_desc) - 2)
+        offset = min(st.session_state["recent_offset"], max_offset)
+
+        # 표시할 2개월
+        display_months = all_periods_desc[offset:offset + 2]
+
+        # 로펌 순서: 기본 알파벳 순 + 세종_인도네시아를 지평 뒤로
+        firms_all = sorted(fdf["로펌"].unique())
+        firms_sorted = [f for f in firms_all if f != "세종_인도네시아"]
+        if "세종_인도네시아" in firms_all:
+            firms_sorted.append("세종_인도네시아")
+
+        # 제목 + 이전/다음 화살표
+        col_prev, col_title, col_next = st.columns([1, 8, 1])
+        with col_prev:
+            if st.button("◀", disabled=offset >= max_offset, key="btn_prev_recent",
+                         use_container_width=True):
+                st.session_state["recent_offset"] = offset + 1
+                st.rerun()
+        with col_title:
+            range_label = " · ".join(display_months) if display_months else "-"
+            st.markdown(
+                f"### 📋 이번달 현황  <span style='font-size:14px; color:#6c757d; font-weight:400;'>({range_label})</span>",
+                unsafe_allow_html=True,
+            )
+        with col_next:
+            if st.button("▶", disabled=offset <= 0, key="btn_next_recent",
+                         use_container_width=True):
+                st.session_state["recent_offset"] = offset - 1
+                st.rerun()
+
+        # HTML 표
         html = '<table style="width:100%; border-collapse:collapse; font-size:15px;">'
         html += '<tr style="background:#f1f3f5; border-bottom:2px solid #dee2e6;">'
         html += '<th style="padding:10px; text-align:center;">비용발생월</th>'
         for firm in firms_sorted:
             html += f'<th style="padding:10px; text-align:center;">{firm}</th>'
+        html += '<th style="padding:10px; text-align:center; background:#dee2e6;">총 금액</th>'
         html += '</tr>'
 
-        for period in recent_months:
-            html += '<tr style="border-bottom:1px solid #dee2e6;">'
-            html += f'<td style="padding:10px; font-weight:600; text-align:center;">{period}</td>'
+        for period in display_months:
+            is_latest = (period == latest_period_global)
+            row_bg = "#FFF9C4" if is_latest else ""  # 연노랑
+            row_style = f'background:{row_bg};' if row_bg else ''
+            fw = "700" if is_latest else "500"
+            html += f'<tr style="border-bottom:1px solid #dee2e6; {row_style}">'
+            html += f'<td style="padding:10px; font-weight:{fw}; text-align:center;">{period}</td>'
+            row_total = 0
             for firm in firms_sorted:
                 row_data = fdf[(fdf["로펌"] == firm) & (fdf["표시기간"] == period)]
                 if not row_data.empty:
                     amt = row_data["금액"].sum()
                     link = row_data.iloc[0]["링크"]
-                    html += f'<td style="padding:10px; text-align:center;">'
-                    html += f'<a href="{link}" target="_blank" style="color:#1B4F72; text-decoration:none; font-weight:500;">₩{amt:,.0f}</a>'
-                    html += '</td>'
+                    row_total += amt
+                    if link:
+                        html += f'<td style="padding:10px; text-align:center; font-weight:{fw};">'
+                        html += f'<a href="{link}" target="_blank" style="color:#1B4F72; text-decoration:none;">₩{amt:,.0f}</a>'
+                        html += '</td>'
+                    else:
+                        html += f'<td style="padding:10px; text-align:center; font-weight:{fw};">₩{amt:,.0f}</td>'
                 else:
                     html += '<td style="padding:10px; text-align:center; color:#ccc;">-</td>'
+            # 총 금액 컬럼
+            html += (f'<td style="padding:10px; text-align:center; font-weight:700; '
+                     f'color:#1B4F72; background:#E9ECEF;">₩{row_total:,.0f}</td>')
             html += '</tr>'
         html += '</table>'
 
         st.markdown(html, unsafe_allow_html=True)
-        st.caption("💡 금액을 클릭하면 인보이스 PDF가 새 탭에서 열립니다.")
+        st.caption("💡 연노랑 = 전체 데이터 중 최신 월 · 금액 클릭 시 PDF 새 탭 · ◀▶로 이전/다음 월")
         st.markdown("<br>", unsafe_allow_html=True)
         st.divider()
     else:
-        firms_sorted = sorted(fdf["로펌"].unique())
+        # 로펌 순서 (다른 섹션에서도 사용): 세종_인도네시아 뒤로
+        firms_all = sorted(fdf["로펌"].unique())
+        firms_sorted = [f for f in firms_all if f != "세종_인도네시아"]
+        if "세종_인도네시아" in firms_all:
+            firms_sorted.append("세종_인도네시아")
 
     # ---- 차트 ----
     sort_map = agg.groupby("집계")["__sort"].min().to_dict()
@@ -1443,33 +1496,67 @@ def main():
     x_axis_title = {"월별": "월", "분기별": "분기", "반기별": "반기", "연도별": "연도"}[period_unit]
 
     if view_mode == "단일 연도" and chart_type == "비중 (도넛)":
-        # ============ 도넛 차트 (로펌 비중, 조회 기간 전체 합계) ============
-        donut_df = (fdf.groupby("로펌", as_index=False)["금액"].sum()
-                       .query("금액 > 0")
-                       .sort_values("금액", ascending=False))
-        fig = go.Figure()
-        fig.add_trace(go.Pie(
-            labels=donut_df["로펌"].tolist(),
-            values=donut_df["금액"].tolist(),
-            hole=0.45,
-            marker=dict(colors=[FIRM_COLORS.get(f, "#95A5A6") for f in donut_df["로펌"]]),
-            textinfo="label+percent",
-            texttemplate="<b>%{label}</b><br>₩%{value:,.0f}<br>%{percent}",
-            textfont=dict(size=13),
-            hovertemplate="%{label}<br>₩%{value:,.0f} (%{percent})<extra></extra>",
-            sort=False,
-        ))
-        # 중앙에 총액
-        fig.update_layout(
-            annotations=[dict(
-                text=f"<b>총 ₩{fdf['금액'].sum()/10_000:,.0f}만</b>",
-                x=0.5, y=0.5, font=dict(size=18, color="#1B4F72"), showarrow=False
-            )],
-            legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center", font=dict(size=13)),
-            height=520,
-            margin=dict(t=30, b=30, l=30, r=30),
-            template="plotly_white",
+        # ============ 도넛 차트 — 기준 기간 선택 ============
+        # 집계 단위별 사용 가능한 기간 목록 (agg의 '집계' 컬럼)
+        available_periods = sorted(chart_df["집계"].unique(), key=lambda x: sort_map.get(x, 999))
+        # 셀렉트: 전체 기간 합계 + 각 기간
+        donut_options = ["전체 기간 합계"] + available_periods
+        # 기본값: 가장 최신 기간
+        default_idx = len(donut_options) - 1
+        donut_period = st.selectbox(
+            "🍩 도넛 기준 기간",
+            donut_options,
+            index=default_idx,
+            help="선택한 기간의 로펌별 비중을 표시. '전체 기간 합계'는 조회 기간 전체.",
         )
+
+        # 데이터 필터
+        if donut_period == "전체 기간 합계":
+            donut_src = fdf
+            title_period = f"{period_from} ~ {period_to}"
+        else:
+            donut_src = fdf.assign(__agg=fdf.apply(
+                lambda r: build_agg_key(r, period_unit, cross_year=False), axis=1
+            ))
+            donut_src = donut_src[donut_src["__agg"] == donut_period]
+            title_period = donut_period
+
+        donut_df = (donut_src.groupby("로펌", as_index=False)["금액"].sum()
+                             .query("금액 > 0")
+                             .sort_values("금액", ascending=False))
+
+        if donut_df.empty:
+            st.warning(f"'{title_period}' 기간에 청구 내역이 없습니다.")
+            fig = go.Figure()
+        else:
+            total_amt = donut_df["금액"].sum()
+            fig = go.Figure()
+            fig.add_trace(go.Pie(
+                labels=donut_df["로펌"].tolist(),
+                values=donut_df["금액"].tolist(),
+                hole=0.45,
+                marker=dict(colors=[FIRM_COLORS.get(f, "#95A5A6") for f in donut_df["로펌"]]),
+                textinfo="label+percent",
+                texttemplate="<b>%{label}</b><br>₩%{value:,.0f}<br>%{percent}",
+                textfont=dict(size=13),
+                hovertemplate="%{label}<br>₩%{value:,.0f} (%{percent})<extra></extra>",
+                sort=False,
+            ))
+            fig.update_layout(
+                title=dict(
+                    text=f"<b>{title_period}</b> 로펌별 비중",
+                    x=0.5, xanchor="center",
+                    font=dict(size=15, color="#1B4F72"),
+                ),
+                annotations=[dict(
+                    text=f"<b>총 ₩{total_amt/10_000:,.0f}만</b>",
+                    x=0.5, y=0.5, font=dict(size=18, color="#1B4F72"), showarrow=False
+                )],
+                legend=dict(orientation="h", y=-0.05, x=0.5, xanchor="center", font=dict(size=13)),
+                height=520,
+                margin=dict(t=60, b=30, l=30, r=30),
+                template="plotly_white",
+            )
     elif view_mode == "단일 연도":
         # ============ 막대 차트 ============
         fig = go.Figure()

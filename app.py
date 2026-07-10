@@ -1104,22 +1104,28 @@ def apply_custom_css():
         section[data-testid="stSidebar"] {
             background: #f8f9fa;
         }
-        /* 사이드바 상단 헤더 축소 (접기 버튼은 유지) */
+        /* 사이드바 상단 헤더 (접기 버튼)를 우측 상단 절대 위치로 → 제목이 위로 붙음 */
         [data-testid="stSidebarHeader"] {
-            padding-top: 0.25rem !important;
-            padding-bottom: 0 !important;
-            min-height: 2rem !important;
+            position: absolute !important;
+            top: 0.25rem !important;
+            right: 0.5rem !important;
+            padding: 0 !important;
             height: auto !important;
+            min-height: 0 !important;
+            width: auto !important;
+            background: transparent !important;
+            z-index: 999 !important;
         }
         [data-testid="stSidebar"] > div:first-child {
             padding-top: 0 !important;
         }
         [data-testid="stSidebarUserContent"] {
-            padding-top: 0.25rem !important;
+            padding-top: 0.5rem !important;
+            padding-right: 2.5rem !important;  /* 접기 버튼과 겹치지 않게 오른쪽 여유 */
             margin-top: 0 !important;
         }
         [data-testid="stSidebar"] .block-container {
-            padding-top: 0.25rem !important;
+            padding-top: 0.5rem !important;
         }
         /* multiselect 태그 색상 (빨강 → 진한 회색) */
         span[data-baseweb="tag"] {

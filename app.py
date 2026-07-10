@@ -159,6 +159,56 @@ MANUAL_2025_FILENAMES = {
     },
 }
 
+# ============================================================
+# 로펌 표시 순서 (모든 표·차트에 공통 적용)
+# ============================================================
+# 이 리스트 순서대로 표시. 새 로펌 추가 시 하단에 이름만 추가하면 됨.
+FIRM_ORDER = [
+    "DLS", "D&A", "SLP", "지평", "율촌", "김앤장", "광장", "세종_인도네시아",
+]
+
+
+def order_firms(firms):
+    """로펌 리스트를 FIRM_ORDER 순서로 정렬. 리스트에 없는 로펌은 뒤쪽 알파벳 순."""
+    firms_set = set(firms)
+    ordered = [f for f in FIRM_ORDER if f in firms_set]
+    extras = sorted(f for f in firms_set if f not in FIRM_ORDER)
+    return ordered + extras
+
+
+# ============================================================
+# 2026년 파싱 결과 수동 오버라이드
+# 특정 파일이 잘못된 월로 파싱되는 경우 강제로 재지정
+# 예: "Invoice.493547 1&3월.pdf" → 파싱 시 1월로 잡히지만 실제로는 3월분
+# ============================================================
+MANUAL_2026_OVERRIDES = [
+    {
+        "파일명_힌트": "Invoice.493547",   # 김앤장 1&3월 합본 인보이스
+        "로펌": "김앤장",
+        "지정_연도": 2026,
+        "지정_월": 3,
+    },
+    # 향후 유사한 케이스 발견 시 이 리스트에 추가
+]
+
+
+def apply_manual_overrides(records):
+    """2026 파싱 결과에 MANUAL_2026_OVERRIDES 적용."""
+    for r in records:
+        fname = r.get("파일명", "")
+        firm = r.get("로펌", "")
+        for ov in MANUAL_2026_OVERRIDES:
+            if ov["파일명_힌트"] in fname and firm == ov["로펌"]:
+                r["연도"] = ov["지정_연도"]
+                r["월"] = ov["지정_월"]
+                r["기간"] = f"{ov['지정_연도']}-{ov['지정_월']:02d}"
+                r["표시기간"] = r["기간"]
+                r["표시연도"] = r["연도"]
+                r["표시월"] = r["월"]
+                break
+    return records
+
+
 # 로펌별 차트 색상 (파스텔 톤, 통일감 있게)
 FIRM_COLORS = {
     "광장": "#7BA7D9",       # 파스텔 블루
@@ -1121,9 +1171,12 @@ def main():
     if snapshot:
         confirmed_until = snapshot.get("confirmed_until", "")
         confirmed_records = snapshot.get("records", [])
+        # 확정 스냅샷에도 오버라이드 적용 (구 스냅샷에 잘못 저장된 값 대응)
+        confirmed_records = apply_manual_overrides(confirmed_records)
         with st.spinner(f"📂 최신 데이터 (`{confirmed_until}` 이후) 파싱 중..."):
             # 스냅샷 이후 기간만 라이브 파싱
             live_records, errors = collect_invoices()
+            live_records = apply_manual_overrides(live_records)
             live_records = [
                 r for r in live_records
                 if str(r.get("표시기간", "")) > confirmed_until
@@ -1138,6 +1191,7 @@ def main():
     else:
         with st.spinner("📂 구글 드라이브에서 인보이스를 읽는 중..."):
             records_2026, errors_2026 = collect_invoices()
+            records_2026 = apply_manual_overrides(records_2026)
             records_2025, errors_2025 = collect_invoices_2025()
             records = records_2026 + records_2025
             errors = errors_2026 + errors_2025
@@ -1454,10 +1508,7 @@ def main():
         display_months = all_periods_desc[offset:offset + 2]
 
         # 로펌 순서: 기본 알파벳 순 + 세종_인도네시아를 지평 뒤로
-        firms_all = sorted(fdf["로펌"].unique())
-        firms_sorted = [f for f in firms_all if f != "세종_인도네시아"]
-        if "세종_인도네시아" in firms_all:
-            firms_sorted.append("세종_인도네시아")
+        firms_sorted = order_firms(fdf["로펌"].unique())
 
         # 이전/다음 화살표 (우측 상단, 표 위)
         col_spacer, col_prev, col_next = st.columns([12, 1, 1])
@@ -1515,10 +1566,7 @@ def main():
         st.divider()
     else:
         # 로펌 순서 (다른 섹션에서도 사용): 세종_인도네시아 뒤로
-        firms_all = sorted(fdf["로펌"].unique())
-        firms_sorted = [f for f in firms_all if f != "세종_인도네시아"]
-        if "세종_인도네시아" in firms_all:
-            firms_sorted.append("세종_인도네시아")
+        firms_sorted = order_firms(fdf["로펌"].unique())
 
     # ---- 차트 ----
     sort_map = agg.groupby("집계")["__sort"].min().to_dict()

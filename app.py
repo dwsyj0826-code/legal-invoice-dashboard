@@ -607,9 +607,11 @@ def get_display_name(folder_name):
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def collect_invoices():
+def collect_invoices(confirmed_until: str = ""):
     """
     전체 로펌 폴더를 스캔하여 인보이스 데이터 수집.
+    confirmed_until: "YYYY-MM" 형식. 이 기간 이하로 파일명·폴더명에서 월이 추정되면
+                    파일 다운로드·파싱 자체를 스킵 (스냅샷에 이미 있으므로).
     반환: (records: list[dict], errors: list[str])
     """
     service = get_drive_service()
@@ -652,6 +654,13 @@ def collect_invoices():
                 month_info_from_name = extract_month(fname)
                 if not month_info_from_name and source != "direct":
                     month_info_from_name = extract_month(source)
+
+                # ★ Pre-filter: 파일명·폴더명에서 월 추정 가능 & 확정 기간 이하 → 다운로드 스킵
+                if confirmed_until and month_info_from_name:
+                    _y, _m = month_info_from_name
+                    _p = f"{_y}-{_m:02d}"
+                    if _p <= confirmed_until:
+                        continue  # 스냅샷에 이미 있음 → 파싱 스킵
 
                 # 금액 + PDF 텍스트 기반 월 추출
                 amount = None
@@ -1180,7 +1189,8 @@ def main():
         confirmed_records = snapshot.get("records", [])
         confirmed_records = apply_manual_overrides(confirmed_records)
         with st.spinner(f"📂 최신 데이터 (`{confirmed_until}` 이후) 파싱 중..."):
-            live_records, errors = collect_invoices()
+            # 확정 기간 이하는 pre-filter로 파일 다운로드부터 스킵 (시간 단축)
+            live_records, errors = collect_invoices(confirmed_until=confirmed_until)
             live_records = apply_manual_overrides(live_records)
             live_records = [
                 r for r in live_records
@@ -1286,26 +1296,30 @@ def main():
                     st.warning("최소 2개 연도를 선택해주세요.")
                 sel_year = None
 
-        all_firms = sorted(df["로펌"].unique())
+        all_firms = order_firms(df["로펌"].unique())
 
-        if "sel_firms_state" not in st.session_state:
-            st.session_state["sel_firms_state"] = all_firms
+        # 위젯 세션 상태 초기화 (첫 렌더에만)
+        if "sel_firms_widget" not in st.session_state:
+            st.session_state["sel_firms_widget"] = all_firms
 
+        # 로펌 라벨 + 전체 선택/해제 버튼
+        st.markdown("**로펌**")
         bc1, bc2 = st.columns(2)
-        if bc1.button("전체 선택", use_container_width=True):
-            st.session_state["sel_firms_state"] = all_firms
+        if bc1.button("로펌 전체 선택", use_container_width=True,
+                      key="btn_firms_all"):
+            st.session_state["sel_firms_widget"] = all_firms
             st.rerun()
-        if bc2.button("전체 해제", use_container_width=True):
-            st.session_state["sel_firms_state"] = []
+        if bc2.button("로펌 전체 해제", use_container_width=True,
+                      key="btn_firms_none"):
+            st.session_state["sel_firms_widget"] = []
             st.rerun()
 
         sel_firms = st.multiselect(
-            "로펌",
+            "선택된 로펌",
             all_firms,
-            default=st.session_state["sel_firms_state"],
             key="sel_firms_widget",
+            label_visibility="collapsed",
         )
-        st.session_state["sel_firms_state"] = sel_firms
 
         st.divider()
 

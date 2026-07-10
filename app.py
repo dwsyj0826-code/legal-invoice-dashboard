@@ -1650,9 +1650,9 @@ def main():
                     name=firm,
                     marker_color=FIRM_COLORS.get(firm, "#95A5A6"),
                     text=fd["금액"].apply(lambda v: f"{v/10_000:,.0f}만"),
-                    textposition="inside",
+                    textposition="auto",
                     textangle=0,
-                    textfont=dict(size=14, color="white"),
+                    textfont=dict(size=14, color="#212529"),
                     hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
                 )
             )
@@ -1940,27 +1940,42 @@ def main():
     with fc2:
         all_months = sorted(fdf["표시기간"].unique(), reverse=True)
 
+        # 드롭다운 안에 연도 전체 선택 shortcut (두 연도 비교 시)
+        year_shortcuts = []
         if view_mode == "두 연도 비교":
-            years_available = sorted(set(m[:4] for m in all_months))
-            btn_cols = st.columns(len(years_available))
-            for _i, _y in enumerate(years_available):
-                with btn_cols[_i]:
-                    if st.button(f"{_y} 전체", key=f"btn_month_year_{_y}",
-                                 use_container_width=True):
-                        st.session_state["detail_month_state"] = [
-                            m for m in all_months if m.startswith(_y)
-                        ]
-                        st.rerun()
+            _years_avail = sorted({m[:4] for m in all_months}, reverse=True)
+            year_shortcuts = [f"🗓 {y} 전체" for y in _years_avail]
 
-        if "detail_month_state" not in st.session_state:
-            st.session_state["detail_month_state"] = all_months
+        # 옵션 = shortcut + 실제 월 (Streamlit 내장 Select all은 자동으로 보임)
+        month_options = year_shortcuts + all_months
 
-        detail_months = st.multiselect(
-            "월 필터", all_months,
-            default=st.session_state.get("detail_month_state", all_months),
+        # 위젯 초기값
+        if "detail_month_widget" not in st.session_state:
+            st.session_state["detail_month_widget"] = all_months
+
+        def _handle_month_shortcut():
+            """드롭다운에서 '🗓 YYYY 전체' 선택 시 해당 연도 월들로 확장."""
+            val = list(st.session_state["detail_month_widget"])
+            changed = False
+            for _sc in year_shortcuts:
+                if _sc in val:
+                    changed = True
+                    val = [v for v in val if v != _sc]
+                    _year = _sc.replace("🗓 ", "").replace(" 전체", "")
+                    for m in all_months:
+                        if m.startswith(_year) and m not in val:
+                            val.append(m)
+            if changed:
+                st.session_state["detail_month_widget"] = val
+
+        detail_months_raw = st.multiselect(
+            "월 필터",
+            month_options,
             key="detail_month_widget",
+            on_change=_handle_month_shortcut,
         )
-        st.session_state["detail_month_state"] = detail_months
+        # 실제 값 (특수 라벨 제외)
+        detail_months = [m for m in detail_months_raw if m in all_months]
 
     tbl = fdf[
         (fdf["로펌"].isin(detail_firms)) & (fdf["표시기간"].isin(detail_months))

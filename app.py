@@ -1292,7 +1292,7 @@ def main():
             chart_type = "시계열 (막대)"
 
         if view_mode == "두 연도 비교" and period_unit == "연도별":
-            st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이라 라인 형태가 안 나옴.")
+            st.caption("💡 연도별 + 두 연도 비교: 각 연도당 값이 1개뿐이므로 막대그래프로 표시됩니다.")
 
         st.divider()
 
@@ -1798,48 +1798,85 @@ def main():
         )
 
         year_palette = {2024: "#7BA7D9", 2025: "#E8998D", 2026: "#A3C9A8", 2027: "#B8A0D9"}
+        years_sorted = sorted(year_chart["표시연도"].unique())
 
         fig = go.Figure()
-        # 라벨 겹침 방지: 연도별로 textposition 다르게 (가장 작은 연도 = top, 그 외 = bottom)
-        years_sorted = sorted(year_chart["표시연도"].unique())
-        for idx, year in enumerate(years_sorted):
-            yd = year_chart[year_chart["표시연도"] == year].sort_values("__sort")
-            yd = yd.set_index("집계").reindex(periods_sorted).reset_index()
-            # 짝수 번째 = top, 홀수 번째 = bottom (교대)
-            tpos = "top center" if idx % 2 == 0 else "bottom center"
+
+        if period_unit == "연도별":
+            # 연도별 + 두 연도 비교: 각 연도당 값이 1개 → 막대그래프
+            x_vals = [f"{int(y)}년" for y in years_sorted]
+            y_vals = []
+            colors = []
+            for y in years_sorted:
+                sub = year_chart[year_chart["표시연도"] == y]
+                y_vals.append(float(sub["금액"].sum()))
+                colors.append(year_palette.get(int(y), "#95A5A6"))
             fig.add_trace(
-                go.Scatter(
-                    x=yd["집계"],
-                    y=yd["금액"],
-                    mode="lines+markers+text",
-                    name=f"{int(year)}년",
-                    line=dict(color=year_palette.get(int(year), "#95A5A6"), width=3),
-                    marker=dict(size=10),
-                    text=yd["금액"].apply(
-                        lambda v: f"{v/10_000:,.0f}만" if pd.notna(v) and v > 0 else ""
-                    ),
-                    textposition=tpos,
+                go.Bar(
+                    x=x_vals,
+                    y=y_vals,
+                    marker_color=colors,
+                    text=[f"{v/10_000:,.0f}만" if v > 0 else "" for v in y_vals],
+                    textposition="outside",
                     textfont=dict(size=14, color="#333"),
-                    hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
-                    connectgaps=False,
+                    hovertemplate="%{x}<br>₩%{y:,.0f}<extra></extra>",
+                    showlegend=False,
                 )
             )
+            y_max_bar = max(y_vals) if y_vals else 0
+            fig.update_layout(
+                xaxis=dict(title="연도", type="category", tickfont=dict(size=14)),
+                yaxis=dict(
+                    title="금액 (원)",
+                    tickformat=",",
+                    tickfont=dict(size=13),
+                    range=[0, y_max_bar * 1.15] if y_max_bar > 0 else None,
+                ),
+                height=520,
+                margin=dict(t=30, b=60),
+                template="plotly_white",
+                hoverlabel=dict(font_size=14),
+                bargap=0.5,
+            )
+        else:
+            # 월별/분기별/반기별: 연도별 라인 겹쳐 표시
+            for idx, year in enumerate(years_sorted):
+                yd = year_chart[year_chart["표시연도"] == year].sort_values("__sort")
+                yd = yd.set_index("집계").reindex(periods_sorted).reset_index()
+                tpos = "top center" if idx % 2 == 0 else "bottom center"
+                fig.add_trace(
+                    go.Scatter(
+                        x=yd["집계"],
+                        y=yd["금액"],
+                        mode="lines+markers+text",
+                        name=f"{int(year)}년",
+                        line=dict(color=year_palette.get(int(year), "#95A5A6"), width=3),
+                        marker=dict(size=10),
+                        text=yd["금액"].apply(
+                            lambda v: f"{v/10_000:,.0f}만" if pd.notna(v) and v > 0 else ""
+                        ),
+                        textposition=tpos,
+                        textfont=dict(size=14, color="#333"),
+                        hovertemplate="%{x}<br>%{fullData.name}: ₩%{y:,.0f}<extra></extra>",
+                        connectgaps=False,
+                    )
+                )
 
-        fig.update_layout(
-            xaxis=dict(
-                title=x_axis_title,
-                type="category",
-                categoryorder="array",
-                categoryarray=periods_sorted,
-                tickfont=dict(size=13),
-            ),
-            yaxis=dict(title="금액 (원)", tickformat=",", tickfont=dict(size=13)),
-            legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
-            height=520,
-            margin=dict(t=30, b=80),
-            template="plotly_white",
-            hoverlabel=dict(font_size=14),
-        )
+            fig.update_layout(
+                xaxis=dict(
+                    title=x_axis_title,
+                    type="category",
+                    categoryorder="array",
+                    categoryarray=periods_sorted,
+                    tickfont=dict(size=13),
+                ),
+                yaxis=dict(title="금액 (원)", tickformat=",", tickfont=dict(size=13)),
+                legend=dict(orientation="h", y=-0.18, x=0.5, xanchor="center", font=dict(size=14)),
+                height=520,
+                margin=dict(t=30, b=80),
+                template="plotly_white",
+                hoverlabel=dict(font_size=14),
+            )
 
     st.plotly_chart(fig, use_container_width=True)
 
@@ -1917,7 +1954,7 @@ def main():
                 styles.loc[r, "합계"] = emphasis
         return styles
 
-    # === HTML 테이블 렌더링 (로펌 열·합계 열 sticky, 중간 가로 스크롤) ===
+    # === HTML 테이블 렌더링 ===
     def _fmt_money(v):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return "-"
@@ -1930,10 +1967,28 @@ def main():
         return f"₩{n:,.0f}"
 
     data_cols = [c for c in pivot.columns if c != "합계"]
-    firm_col_hdr = "로펌"
-    total_col_hdr = "합계"
 
-    # 스타일 상수
+    # 셀 → (firm, period) → 인보이스 링크 매핑 (월별에서만 유효)
+    # 분기/반기/연도별에서는 여러 월이 뭉쳐지므로 링크 매핑 불가
+    link_lookup = {}
+    if period_unit == "월별":
+        for _, _r in fdf.iterrows():
+            key = (_r["로펌"], _r["표시기간"])
+            if _r.get("링크"):
+                link_lookup[key] = _r["링크"]
+
+    # 두 연도 비교 모드에서 최신 연도(현재) 컬럼 텍스트 파란색 강조
+    current_year_str = None
+    if view_mode == "두 연도 비교":
+        _years_in_data = sorted({str(y) for y in fdf["표시연도"].unique()})
+        if _years_in_data:
+            current_year_str = _years_in_data[-1]  # 예: "2026"
+
+    def _is_current_year_col(col):
+        if not current_year_str or not isinstance(col, str):
+            return False
+        return col.startswith(current_year_str)
+
     _th_base = ("padding:10px 12px; text-align:center; background:#f1f3f5; "
                 "border-bottom:2px solid #dee2e6; font-weight:700; white-space:nowrap;")
     _td_base = ("padding:8px 12px; text-align:right; border-bottom:1px solid #e9ecef; "
@@ -1943,21 +1998,19 @@ def main():
     _sticky_right = ("position:sticky; right:0; z-index:3; "
                      "background:#E9ECEF; color:#1B4F72; font-weight:700; "
                      "border-left:2px solid #dee2e6;")
-    _sticky_bottom = ("position:sticky; bottom:0; z-index:2; "
-                      "background:#E9ECEF; color:#1B4F72; font-weight:700; "
-                      "border-top:2px solid #dee2e6;")
 
     html = ['<div style="max-width:100%; overflow-x:auto; border:1px solid #dee2e6; border-radius:8px;">']
     html.append('<table style="width:100%; border-collapse:separate; border-spacing:0; font-size:14px;">')
 
     # 헤더
     html.append("<thead><tr>")
-    html.append(f'<th style="{_th_base}{_sticky_left} background:#f1f3f5;">{firm_col_hdr}</th>')
+    html.append(f'<th style="{_th_base}{_sticky_left} background:#f1f3f5;">로펌</th>')
     for c in data_cols:
-        bg = col_group_bg.get(c, "")
-        # 헤더는 기본 회색 유지, 그룹 표시는 셀에서
-        html.append(f'<th style="{_th_base}">{c}</th>')
-    html.append(f'<th style="{_th_base}{_sticky_right} background:#dee2e6;">{total_col_hdr}</th>')
+        hdr_extra = ""
+        if _is_current_year_col(c):
+            hdr_extra = "color:#1B4F72;"  # 현재 연도 헤더도 파란색
+        html.append(f'<th style="{_th_base}{hdr_extra}">{c}</th>')
+    html.append(f'<th style="{_th_base}{_sticky_right} background:#dee2e6;">합계</th>')
     html.append("</tr></thead>")
 
     # 본문
@@ -1968,7 +2021,6 @@ def main():
         if is_total_row:
             row_style = "background:#E9ECEF; font-weight:700; color:#1B4F72;"
 
-        # 로펌 셀 (sticky left)
         left_bg = "#E9ECEF" if is_total_row else "#ffffff"
         left_fw = "700" if is_total_row else "600"
         left_color = "#1B4F72" if is_total_row else "#212529"
@@ -1984,9 +2036,23 @@ def main():
             cell_style = _td_base
             if is_total_row:
                 cell_style += "background:#E9ECEF; color:#1B4F72; font-weight:700;"
-            elif grp_bg:
-                cell_style += grp_bg
-            html.append(f'<td style="{cell_style}">{_fmt_money(v)}</td>')
+            else:
+                if grp_bg:
+                    cell_style += grp_bg
+                if _is_current_year_col(c):
+                    cell_style += "color:#1B4F72; font-weight:600;"  # 현재 연도 텍스트 강조
+
+            # 월별 모드에서 링크가 있으면 클릭 가능
+            money_html = _fmt_money(v)
+            if (not is_total_row) and period_unit == "월별" and v and float(v) > 0:
+                link = link_lookup.get((r, c), "")
+                if link:
+                    money_html = (
+                        f'<a href="{link}" target="_blank" '
+                        f'style="color:inherit; text-decoration:none; border-bottom:1px dotted #999;">'
+                        f'{money_html}</a>'
+                    )
+            html.append(f'<td style="{cell_style}">{money_html}</td>')
 
         v_total = pivot.at[r, "합계"] if "합계" in pivot.columns else 0
         right_style = _td_base + _sticky_right
@@ -1997,8 +2063,6 @@ def main():
     html.append("</tbody></table></div>")
 
     st.markdown("".join(html), unsafe_allow_html=True)
-    if len(data_cols) > 6:
-        st.caption("💡 표에 데이터가 많으면 좌우로 드래그해서 스크롤할 수 있습니다. 로펌·합계 열은 항상 고정.")
 
     # ---- 상세 내역 ----
     st.subheader("📋 상세 내역")

@@ -1605,6 +1605,39 @@ def main():
             key="sel_firms_widget",
         )
 
+        # 로펌 필터 태그를 로펌별 차트 색상과 동일하게 (사이드바 태그만)
+        # JS로 부모 DOM에서 tag element 찾아 배경색 지정
+        import json as _json_color
+        _firm_colors_json = _json_color.dumps(FIRM_COLORS, ensure_ascii=False)
+        import streamlit.components.v1 as _comp
+        _comp.html(f"""
+        <script>
+        (function() {{
+          const firmColors = {_firm_colors_json};
+          const apply = () => {{
+            try {{
+              const doc = window.parent.document;
+              const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
+              if (!sidebar) return;
+              sidebar.querySelectorAll('[data-baseweb="tag"]').forEach(tag => {{
+                const textEl = tag.querySelector('span');
+                if (!textEl) return;
+                const text = textEl.innerText.trim();
+                const color = firmColors[text];
+                if (color) {{
+                  tag.style.background = color;
+                  tag.style.border = '1px solid ' + color;
+                  tag.style.color = '#2C3E50';
+                }}
+              }});
+            }} catch(e) {{}}
+          }};
+          apply();
+          setInterval(apply, 500);
+        }})();
+        </script>
+        """, height=0)
+
         st.divider()
 
         # ═════════ [3] 계약 확인 필요 ═════════
@@ -2436,7 +2469,7 @@ def main():
                 st.session_state["detail_month_widget"] = val
 
         detail_months_raw = st.multiselect(
-            "월 필터",
+            "날짜 필터",
             month_options,
             key="detail_month_widget",
             on_change=_handle_month_shortcut,

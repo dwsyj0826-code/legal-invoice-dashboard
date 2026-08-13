@@ -734,11 +734,13 @@ def parse_pdf_amount(text, firm):
             return _clean(m.group(1))
 
     elif firm == "지평":
-        # "소 계 ￦ 16,029,280"
+        # "소 계 ￦ 16,029,280" - 통화기호 필수 매칭
         # 지평 7월처럼 특별할인이 있는 경우 "소 계"가 2번 나옴:
         #   1) 특별할인 전 소계  2) 특별할인 후 소계 (실제 청구)
         # → 마지막 "소 계"를 잡아야 특별할인 반영됨
-        matches = list(re.finditer(r"소\s*계\s*[￦₩W]?\s*([\d,]+)", t))
+        # ⚠ timesheet 하단에도 "소 계 X.XX" (변호사 시간 소계) 있음
+        # → 통화 기호 (￦, ₩, W, \) 반드시 필요하도록 하여 시간 subtotal 제외
+        matches = list(re.finditer(r"소\s*계\s*[￦₩W\\]+\s*([\d,]{4,})", t))
         if matches:
             return _clean(matches[-1].group(1))
 

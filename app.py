@@ -1605,38 +1605,40 @@ def main():
             key="sel_firms_widget",
         )
 
-        # 로펌 필터 태그를 로펌별 차트 색상과 동일하게 (사이드바 태그만)
-        # JS로 부모 DOM에서 tag element 찾아 배경색 지정
-        import json as _json_color
-        _firm_colors_json = _json_color.dumps(FIRM_COLORS, ensure_ascii=False)
-        import streamlit.components.v1 as _comp
-        _comp.html(f"""
-        <script>
-        (function() {{
-          const firmColors = {_firm_colors_json};
-          const apply = () => {{
-            try {{
-              const doc = window.parent.document;
-              const sidebar = doc.querySelector('section[data-testid="stSidebar"]');
-              if (!sidebar) return;
-              sidebar.querySelectorAll('[data-baseweb="tag"]').forEach(tag => {{
-                const textEl = tag.querySelector('span');
-                if (!textEl) return;
-                const text = textEl.innerText.trim();
-                const color = firmColors[text];
-                if (color) {{
-                  tag.style.background = color;
-                  tag.style.border = '1px solid ' + color;
-                  tag.style.color = '#2C3E50';
-                }}
-              }});
-            }} catch(e) {{}}
-          }};
-          apply();
-          setInterval(apply, 500);
-        }})();
-        </script>
-        """, height=0)
+        # 로펌 필터 태그를 로펌별 차트 색상과 동일하게
+        # CSS :has() 사용 - 각 태그의 aria-label("Remove 로펌명")로 매칭
+        # 사이드바 + 상세내역 로펌 필터 두 곳 모두 적용
+        _tag_css_parts = ["<style>"]
+        for firm, color in FIRM_COLORS.items():
+            # 두 가지 aria-label 형태 대응
+            _tag_css_parts.append(
+                f'[data-baseweb="tag"]:has([aria-label*="{firm}"]),\n'
+                f'[data-baseweb="tag"]:has([title="{firm}"]) {{\n'
+                f'  background-color: {color} !important;\n'
+                f'  background: {color} !important;\n'
+                f'  border: 1px solid {color} !important;\n'
+                f'  color: #2C3E50 !important;\n'
+                f'}}'
+            )
+        # 표 행 간격 + 상세 내역 dataframe 행 높이 + 섹션 간격
+        _tag_css_parts.append("""
+        /* 기간 합계 피벗 표 행 간격 늘리기 */
+        div[data-testid="stMarkdownContainer"] table td,
+        div[data-testid="stMarkdownContainer"] table th {
+            padding-top: 14px !important;
+            padding-bottom: 14px !important;
+        }
+        /* 상세 내역 dataframe 행 높이 */
+        [data-testid="stDataFrame"] div[role="row"] {
+            min-height: 44px !important;
+        }
+        /* 기간 합계 표와 상세 내역 사이 간격 */
+        [data-testid="stMarkdownContainer"] > h3 {
+            margin-top: 3rem !important;
+        }
+        """)
+        _tag_css_parts.append("</style>")
+        st.markdown("\n".join(_tag_css_parts), unsafe_allow_html=True)
 
         st.divider()
 

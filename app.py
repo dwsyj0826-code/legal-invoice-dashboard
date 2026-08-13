@@ -16,7 +16,7 @@ import openpyxl
 import io
 import re
 import json
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 # ============================================================
@@ -201,6 +201,253 @@ def order_firms(firms):
 
 
 # ============================================================
+# 정기자문 계약 정보 (2026년 기준)
+# 종료 30일 전(의사표시 마감일)까지의 잔여일에 따라 알림 표시
+# 데이터 소스: "정기자문 계약현황" 시트 (필요 시 손유진님이 수동 업데이트)
+# ============================================================
+CONTRACTS_2026 = [
+    # (로펌명, 시작일, 종료일, 자동연장, 비고, 컨택)
+    {
+        "로펌": "율촌",
+        "구분": "일반자문",
+        "시작": "2025-12-08",
+        "종료": "2026-11-08",
+        "자동연장": "30일 전 의사표시 없으면 3개월씩 자동연장",
+        "비용": "시간당 요율 25% 할인",
+        "컨택": "정성무 변호사",
+    },
+    {
+        "로펌": "율촌",
+        "구분": "국영문 TF",
+        "시작": "2026-05-06",
+        "종료": "2027-04-05",
+        "자동연장": "30일 전 의사표시 없으면 1년씩 자동연장",
+        "비용": "시간당 23만원 & 60시간 상한 + 초과분 시간당요율 25% 할인",
+        "컨택": "양재선 변호사",
+    },
+    {
+        "로펌": "세종",
+        "구분": "일반자문",
+        "시작": "2025-12-08",
+        "종료": "2026-12-31",
+        "자동연장": "30일 전 의사표시 없으면 3개월씩 자동연장",
+        "비용": "시간당 요율 30% 할인",
+        "컨택": "김성태 변호사",
+    },
+    {
+        "로펌": "지평",
+        "구분": "일반자문",
+        "시작": "2026-02-03",
+        "종료": "2027-01-03",
+        "자동연장": "30일 전 의사표시 없으면 3개월씩 자동연장",
+        "비용": "12시간 100만원 + 초과분 20% 할인",
+        "컨택": "박효민 변호사",
+    },
+    {
+        "로펌": "세종_인도네시아",
+        "구분": "인도네시아 정기",
+        "시작": "2026-03-01",
+        "종료": "2027-02-28",
+        "자동연장": "30일 전 의사표시 없으면 3개월씩 자동연장",
+        "비용": "분기별 12h/500만원 + 초과분 시간당 USD 350",
+        "컨택": "이대호 변호사",
+    },
+    {
+        "로펌": "김앤장",
+        "구분": "일반자문",
+        "시작": "2026-03-01",
+        "종료": "2027-02-28",
+        "자동연장": "30일 전 의사표시 없으면 3개월씩 자동연장",
+        "비용": "8시간 300만원 + 초과분 10% 할인",
+        "컨택": "류시연 변호사",
+    },
+    {
+        "로펌": "광장",
+        "구분": "일반자문",
+        "시작": "2026-04-01",
+        "종료": "2027-03-31",
+        "자동연장": "30일 전 의사표시 없으면 1년씩 자동연장",
+        "비용": "4시간 150만원 (이월X) + 초과분 15% 할인",
+        "컨택": "김용비 변호사",
+    },
+    {
+        "로펌": "SLP",
+        "구분": "미체결",
+        "시작": None,
+        "종료": None,
+        "자동연장": "계약 체결 필요",
+        "비용": "시간당 요율 (할인 X)",
+        "컨택": "박상진 변호사",
+    },
+    {
+        "로펌": "DLS",
+        "구분": "미체결",
+        "시작": None,
+        "종료": None,
+        "자동연장": "계약 체결 필요",
+        "비용": "시간당 요율 (할인 X)",
+        "컨택": "이승한 변호사",
+    },
+    {
+        "로펌": "D&A",
+        "구분": "자동연장",
+        "시작": "2023-05-24",
+        "종료": None,   # 자동연장 계속
+        "자동연장": "2023년 계약 자동연장 (부속합의서 20231205)",
+        "비용": "20시간 500만원 + 초과분 시간당 요율",
+        "컨택": "박재성 변호사",
+    },
+]
+
+
+# 정기자문 계약현황 시트 ID (Google Sheets)
+CONTRACT_SHEET_ID = "1JrsPcObnk9QVQEZj834SsOn-6QnfS8re7siPWJcGBKM"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_contracts_from_sheet():
+    """
+    정기자문 계약현황 시트에서 최신 계약 정보를 로드.
+    시트 파싱 실패 시 하드코딩된 CONTRACTS_2026 반환.
+    """
+    try:
+        service = get_drive_service()
+        # 시트를 CSV로 export
+        request = service.files().export_media(
+            fileId=CONTRACT_SHEET_ID, mimeType="text/csv"
+        )
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        buf.seek(0)
+        content = buf.read().decode("utf-8-sig", errors="ignore")
+        lines = content.splitlines()
+
+        # 2026년 섹션 찾기 (헤더: "2026")
+        contracts = []
+        in_2026 = False
+        for raw in lines:
+            row = [c.strip() for c in raw.split(",")]
+            # "2026" 헤더 감지 (원계약 컬럼 옆)
+            if any("2026-2027" in c or c.strip() == "2026" for c in row):
+                in_2026 = True
+                continue
+            if in_2026:
+                # 다음 연도 헤더가 나오면 종료
+                if any(re.fullmatch(r"20\d{2}", c.strip()) for c in row):
+                    break
+                # 로펌 이름이 있는 행만 파싱 (첫 non-empty 열이 로펌명)
+                non_empty = [c for c in row if c]
+                if not non_empty:
+                    continue
+                firm_name = non_empty[0]
+                # 헤더 행 스킵
+                if firm_name in ("SLP", "DLS", "대륙아주", "율촌", "율촌 (일반자문)",
+                                 "율촌 (국영문 TF)", "세종", "지평",
+                                 "세종 (인도네시아)", "김앤장", "광장"):
+                    # 컬럼 순서 (시트 기준): 로펌 | 원계약 | 비용처리 | 체결 | 시작 | 종료 | 비고 | 비용 | 컨택
+                    # 시트가 markdown_pipe로 왔으니 정확한 인덱스 확인 필요
+                    # 정확도 위해 각 값에서 날짜/텍스트 추출
+                    def _find_date(cells):
+                        for c in cells:
+                            m = re.search(r"(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", c)
+                            if m:
+                                return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                        return None
+                    # 로펌명 매핑 (대시보드 로펌 코드로 표준화)
+                    firm_map = {
+                        "대륙아주": "D&A",
+                        "세종 (인도네시아)": "세종_인도네시아",
+                        "세종": "세종",
+                        "율촌 (일반자문)": "율촌",
+                        "율촌 (국영문 TF)": "율촌",
+                    }
+                    firm_std = firm_map.get(firm_name, firm_name)
+                    # 시트에서 시작/종료는 대개 5번, 6번 index. 하지만 markdown pipe 형태로 왔으니 순회하며 날짜 뽑기
+                    dates = []
+                    for c in row:
+                        m = re.search(r"(\d{4})\.\s*(\d{1,2})\.\s*(\d{1,2})", c)
+                        if m:
+                            dates.append(f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}")
+                    start = dates[0] if len(dates) >= 1 else None
+                    end = dates[1] if len(dates) >= 2 else None
+                    # 자동연장 조건 찾기 (30일/의사표시 문자열)
+                    auto_renew = ""
+                    for c in row:
+                        if "의사표시" in c or "자동연장" in c:
+                            auto_renew = c
+                            break
+                    # 비용 조건 찾기
+                    cost = ""
+                    for c in row:
+                        if "할인" in c or "정기" in c or "시간당" in c or "500만원" in c or "300만원" in c or "150만원" in c or "100만원" in c:
+                            cost = c
+                            break
+                    # 컨택 찾기 (변호사 이름)
+                    contact = ""
+                    for c in row:
+                        if "변호사" in c:
+                            contact = c
+                            break
+                    contracts.append({
+                        "로펌": firm_std,
+                        "구분": firm_name.split("(")[-1].rstrip(")") if "(" in firm_name else "일반자문",
+                        "시작": start,
+                        "종료": end,
+                        "자동연장": auto_renew or "정보 없음",
+                        "비용": cost,
+                        "컨택": contact,
+                    })
+        if contracts:
+            return contracts
+    except Exception:
+        pass
+    # 실패 시 하드코딩 fallback
+    return CONTRACTS_2026
+
+
+def get_contract_alerts(today=None):
+    """
+    계약 정보에 today(default: 오늘) 기준 잔여일 계산.
+    반환: [(계약dict, 종료까지_남은일, 의사표시_마감_남은일, 등급), ...]
+      등급: "긴급" (마감 30일 이내 or 미체결), "주의" (60일 이내), "여유" (그 외)
+    """
+    if today is None:
+        today = date.today()
+    contracts = load_contracts_from_sheet()
+    result = []
+    for c in contracts:
+        if not c["종료"]:
+            # 미체결 or 자동연장
+            if c["구분"] == "미체결":
+                result.append((c, None, None, "긴급"))
+            else:
+                result.append((c, None, None, "여유"))
+            continue
+        try:
+            end = date.fromisoformat(c["종료"])
+        except Exception:
+            result.append((c, None, None, "여유"))
+            continue
+        notice_deadline = end - timedelta(days=30)
+        days_to_end = (end - today).days
+        days_to_notice = (notice_deadline - today).days
+        if days_to_notice < 0:
+            # 의사표시 마감 지남 → 자동연장 진행됨
+            grade = "여유"
+        elif days_to_notice <= 30:
+            grade = "긴급"
+        elif days_to_notice <= 60:
+            grade = "주의"
+        else:
+            grade = "여유"
+        result.append((c, days_to_end, days_to_notice, grade))
+    return result
+
+
+# ============================================================
 # 2026년 파싱 결과 수동 오버라이드
 # 특정 파일이 잘못된 월로 파싱되는 경우 강제로 재지정
 # 예: "Invoice.493547 1&3월.pdf" → 파싱 시 1월로 잡히지만 실제로는 3월분
@@ -211,6 +458,14 @@ MANUAL_2026_OVERRIDES = [
         "로펌": "김앤장",
         "지정_연도": 2026,
         "지정_월": 3,
+    },
+    {
+        # 세종_인도네시아 Q1(3-5월) 초과 자문료 인보이스
+        # 계약: 분기 초과분은 분기말 지급이나 실제 청구가 7월. 대시보드는 분기 종료달 다음달(6월)로 강제
+        "파일명_힌트": "2611535",
+        "로펌": "세종_인도네시아",
+        "지정_연도": 2026,
+        "지정_월": 6,
     },
     # 향후 유사한 케이스 발견 시 이 리스트에 추가
 ]
@@ -480,9 +735,12 @@ def parse_pdf_amount(text, firm):
 
     elif firm == "지평":
         # "소 계 ￦ 16,029,280"
-        m = re.search(r"소\s*계\s*[￦₩W]?\s*([\d,]+)", t)
-        if m:
-            return _clean(m.group(1))
+        # 지평 7월처럼 특별할인이 있는 경우 "소 계"가 2번 나옴:
+        #   1) 특별할인 전 소계  2) 특별할인 후 소계 (실제 청구)
+        # → 마지막 "소 계"를 잡아야 특별할인 반영됨
+        matches = list(re.finditer(r"소\s*계\s*[￦₩W]?\s*([\d,]+)", t))
+        if matches:
+            return _clean(matches[-1].group(1))
 
     elif firm == "D&A":
         # D&A 표준 양식: "공급가 W 18,880,000" (VAT 제외 정상가)
@@ -527,15 +785,27 @@ def parse_pdf_amount(text, firm):
                 pass
 
     elif firm == "세종_인도네시아" or firm == "세종":
-        # 세종은 띄어쓰기가 있고 원화기호가 \(백슬래시)로 표시됨
-        # 라인 아이템: "법률고문료 \ 5,000,000" (VAT 제외)
-        # 상단 문구: "...법률고문료 ₩ 5,500,000 (10% 부가가치세 포함)..." (VAT 포함, 제외 필요)
+        # 세종은 두 종류 인보이스:
+        # (1) 정기 (반기 5M): "법률고문료 \ 5,000,000" 형식
+        # (2) 초과 자문료 (분기 12h 초과분): "법 률 자 문 료 (US$ ... ) \ 28,034,104" 형식
         t_ns = t.replace(" ", "")
-        # 백슬래시 \ 뒤에 오는 법률고문료 금액 우선 (라인 아이템)
+
+        # (2) 초과 자문료 우선 매칭: "법률자문료" 패턴 (US$ 표기 있음)
+        # 백슬래시 뒤 금액 (VAT 별도)
+        m = re.search(r"법률자문료\s*\(US\$[^)]*\)\\?([\d,]+)", t_ns)
+        if m:
+            return _clean(m.group(1))
+        # US$ 없어도 "법률 자문료 \\ 28,034,104" 같은 초과 인보이스 대응
+        m = re.search(r"법률자문료\\?([\d,]+)", t_ns)
+        if m and "법률고문료" not in t_ns[:t_ns.find(m.group(0))+50]:
+            # 법률고문료가 아닌 법률자문료 매칭 (정기 vs 초과 구분)
+            return _clean(m.group(1))
+
+        # (1) 정기: 백슬래시 뒤 법률고문료 (라인 아이템, VAT 제외)
         m = re.search(r"법률고문료\\([\d,]+)", t_ns)
         if m:
             return _clean(m.group(1))
-        # 백슬래시가 없으면 부가가치세 포함액에서 VAT 제거
+        # 백슬래시 없으면 VAT 포함액에서 VAT 제거
         m = re.search(r"법률고문료\s*[₩￦W]?\s*([\d,]+)\s*\(10%\s*부가가치세\s*포함\)", t_ns)
         if m:
             return int(round(_clean(m.group(1)) / 1.1))
@@ -1335,7 +1605,67 @@ def main():
 
         st.divider()
 
-        # ═════════ [3] 기타 ═════════
+        # ═════════ [3] 계약 확인 필요 ═════════
+        alerts = get_contract_alerts()
+        # 긴급/주의만 카운트
+        urgent_cnt = sum(1 for a in alerts if a[3] == "긴급")
+        warn_cnt = sum(1 for a in alerts if a[3] == "주의")
+
+        alert_header = "#### 🔔 계약 확인"
+        if urgent_cnt > 0:
+            alert_header += f" <span style='color:#C0392B;'>({urgent_cnt}건 긴급)</span>"
+        elif warn_cnt > 0:
+            alert_header += f" <span style='color:#B7950B;'>({warn_cnt}건 주의)</span>"
+        st.markdown(alert_header, unsafe_allow_html=True)
+
+        # 등급 순 정렬: 긴급 > 주의 > 여유
+        grade_order = {"긴급": 0, "주의": 1, "여유": 2}
+        alerts_sorted = sorted(alerts, key=lambda x: (grade_order[x[3]], x[2] if x[2] is not None else 9999))
+
+        expanded_default = (urgent_cnt > 0 or warn_cnt > 0)
+        with st.expander("계약 만료·의사표시 마감 확인", expanded=expanded_default):
+            for c, days_to_end, days_to_notice, grade in alerts_sorted:
+                # 색상 매핑
+                color = {"긴급": "#C0392B", "주의": "#B7950B", "여유": "#7B7D7D"}[grade]
+                emoji = {"긴급": "🔴", "주의": "🟡", "여유": "🟢"}[grade]
+
+                if c["구분"] == "미체결":
+                    body = (
+                        f"<div style='padding:4px 0; border-bottom:1px solid #eee;'>"
+                        f"<div style='color:{color}; font-weight:600; font-size:13px;'>"
+                        f"{emoji} {c['로펌']} — <b>미체결</b></div>"
+                        f"<div style='font-size:11px; color:#555;'>{c['자동연장']}</div>"
+                        f"<div style='font-size:11px; color:#888;'>담당: {c['컨택']}</div>"
+                        f"</div>"
+                    )
+                elif c["종료"] is None:
+                    body = (
+                        f"<div style='padding:4px 0; border-bottom:1px solid #eee;'>"
+                        f"<div style='color:{color}; font-weight:600; font-size:13px;'>"
+                        f"{emoji} {c['로펌']} ({c['구분']})</div>"
+                        f"<div style='font-size:11px; color:#555;'>{c['자동연장']}</div>"
+                        f"</div>"
+                    )
+                else:
+                    body = (
+                        f"<div style='padding:4px 0; border-bottom:1px solid #eee;'>"
+                        f"<div style='color:{color}; font-weight:600; font-size:13px;'>"
+                        f"{emoji} {c['로펌']} ({c['구분']})</div>"
+                        f"<div style='font-size:11px;'>"
+                        f"종료: <b>{c['종료']}</b> ({days_to_end}일)"
+                        f"</div>"
+                        f"<div style='font-size:11px;'>"
+                        f"의사표시 마감: <b>{(date.fromisoformat(c['종료']) - timedelta(days=30)).isoformat()}</b>"
+                        f" ({days_to_notice}일)"
+                        f"</div>"
+                        f"<div style='font-size:10px; color:#888;'>{c['자동연장']}</div>"
+                        f"</div>"
+                    )
+                st.markdown(body, unsafe_allow_html=True)
+
+        st.divider()
+
+        # ═════════ [4] 기타 ═════════
         st.markdown("#### ⚙️ 기타")
         if st.button("🔄 새로고침", use_container_width=True, help="Google Drive에서 최신 인보이스 다시 파싱"):
             st.cache_data.clear()

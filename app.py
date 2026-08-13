@@ -304,7 +304,7 @@ CONTRACTS_2026 = [
 CONTRACT_SHEET_ID = "1JrsPcObnk9QVQEZj834SsOn-6QnfS8re7siPWJcGBKM"
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=604800, show_spinner=False)  # 7일 캐시 (계약은 자주 안 바뀜, 시트 수정 후 새로고침 버튼으로 즉시 반영 가능)
 def load_contracts_from_sheet():
     """
     정기자문 계약현황 시트에서 최신 계약 정보를 로드.

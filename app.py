@@ -1620,21 +1620,12 @@ def main():
                 f'  color: #2C3E50 !important;\n'
                 f'}}'
             )
-        # 표 행 간격 + 상세 내역 dataframe 행 높이 + 섹션 간격
+        # 상세 내역 헤더 위 여백 (기간합계 표와 간격)
         _tag_css_parts.append("""
-        /* 기간 합계 피벗 표 행 간격 늘리기 */
-        div[data-testid="stMarkdownContainer"] table td,
-        div[data-testid="stMarkdownContainer"] table th {
-            padding-top: 14px !important;
-            padding-bottom: 14px !important;
-        }
-        /* 상세 내역 dataframe 행 높이 */
-        [data-testid="stDataFrame"] div[role="row"] {
-            min-height: 44px !important;
-        }
-        /* 기간 합계 표와 상세 내역 사이 간격 */
-        [data-testid="stMarkdownContainer"] > h3 {
-            margin-top: 3rem !important;
+        /* 상세 내역 subheader 위 여백만 늘림 - 표 안 행 높이는 그대로 */
+        [data-testid="stHeading"]:has(h3),
+        h3 {
+            /* 기본 여백 유지 */
         }
         """)
         _tag_css_parts.append("</style>")
@@ -2431,7 +2422,8 @@ def main():
 
     st.markdown("".join(html), unsafe_allow_html=True)
 
-    # ---- 상세 내역 ----
+    # ---- 상세 내역 (위쪽 명시적 여백) ----
+    st.markdown("<div style='height:3rem'></div>", unsafe_allow_html=True)
     st.subheader("📋 상세 내역")
 
     fc1, fc2 = st.columns(2)
